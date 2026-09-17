@@ -1,5 +1,6 @@
 const API = '/api';
-const COLS = 160, ROWS = 80, CELL_SIZE = 12;
+let COLS = 160, ROWS = 80;
+const CELL_SIZE = 12;
 const DISPLAY_UPDATE_MS = 50;
 
 const canvas = document.getElementById('board');
@@ -13,6 +14,9 @@ const speedValue = document.getElementById('speedValue');
 const generationValue = document.getElementById('generationValue');
 const copyPatternBtn = document.getElementById('copyPatternBtn');
 const pastePatternBtn = document.getElementById('pastePatternBtn');
+const rowsInput = document.getElementById('rowsInput');
+const colsInput = document.getElementById('colsInput');
+const sizeBtn = document.getElementById('sizeBtn');
 
 let grid = [];
 let ages = [];
@@ -20,13 +24,10 @@ let running = false;
 let pollTimer = null;
 let pendingPattern = null;
 let pendingPatternPosition = null;
-let drawing = false;
-let drawingValue = 1;
 let selecting = false;
 let selectionStart = null;
 let selectionEnd = null;
 let activePointerId = null;
-let drawRequests = [];
 const pointers = new Map();
 let pinchStart = null;
 let zoom = 1;
@@ -54,6 +55,14 @@ function syncPolling() {
 async function fetchState() {
   const res = await fetch(`${API}/state`);
   const data = await res.json();
+  if (data.rows !== ROWS || data.cols !== COLS) {
+    ROWS = data.rows;
+    COLS = data.cols;
+    canvas.width = COLS * CELL_SIZE;
+    canvas.height = ROWS * CELL_SIZE;
+  }
+  rowsInput.value = data.rows;
+  colsInput.value = data.cols;
   grid = data.grid;
   ages = data.ages || grid.map(row => row.map(cell => (cell ? 1 : 0)));
   running = data.running;
@@ -200,10 +209,15 @@ async function pastePatternAt(row, col) {
 
 function getBoardCell(e) {
   const rect = canvas.getBoundingClientRect();
+  const scale = zoom || 1;
   return {
-    col: Math.max(0, Math.min(COLS - 1, Math.floor((e.clientX - rect.left) / CELL_SIZE))),
-    row: Math.max(0, Math.min(ROWS - 1, Math.floor((e.clientY - rect.top) / CELL_SIZE))),
+    col: Math.max(0, Math.min(COLS - 1, Math.floor((e.clientX - rect.left) / scale / CELL_SIZE))),
+    row: Math.max(0, Math.min(ROWS - 1, Math.floor((e.clientY - rect.top) / scale / CELL_SIZE))),
   };
+}
+
+function applyZoom() {
+  canvas.style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`;
 }
 
 function releasePointer(e) {
@@ -212,21 +226,20 @@ function releasePointer(e) {
 }
 
 function drawCell(row, col) {
-  if (row < 0 || row >= ROWS || col < 0 || col >= COLS || !grid[row] || grid[row][col] === drawingValue) return;
-  grid[row][col] = drawingValue;
+  if (row < 0 || row >= ROWS || col < 0 || col >= COLS || !grid[row]) return;
+  grid[row][col] = grid[row][col] ? 0 : 1;
   draw();
-  drawRequests.push(fetch(`${API}/toggle`, {
+  fetch(`${API}/toggle`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ row, col }),
-  }));
+  }).then(fetchState);
 }
 
 canvas.addEventListener('pointerdown', async (e) => {
   e.preventDefault();
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType });
   if (pointers.size >= 2) {
-    drawing = false;
     const [first, second] = [...pointers.values()];
     pinchStart = {
       distance: Math.hypot(second.x - first.x, second.y - first.y),
@@ -257,10 +270,6 @@ canvas.addEventListener('pointerdown', async (e) => {
     drawSelection();
     return;
   }
-  drawing = true;
-  drawingValue = grid[row]?.[col] ? 0 : 1;
-  activePointerId = e.pointerId;
-  canvas.setPointerCapture(activePointerId);
   drawCell(row, col);
 });
 
@@ -277,7 +286,7 @@ canvas.addEventListener('pointermove', (e) => {
     zoom = nextZoom;
     panX = midpoint.x - boardX * zoom;
     panY = midpoint.y - boardY * zoom;
-    canvas.style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`;
+    applyZoom();
     return;
   }
   if (pendingPattern) {
@@ -295,14 +304,12 @@ canvas.addEventListener('pointermove', (e) => {
     drawSelection();
     return;
   }
-  if (!drawing) return;
-  drawCell(row, col);
 });
 
 async function finishDrawing(e) {
   pointers.delete(e.pointerId);
   if (pointers.size < 2) pinchStart = null;
-  if ((!drawing && !selecting) || e.pointerId !== activePointerId) return;
+  if (!selecting || e.pointerId !== activePointerId) return;
   if (selecting) {
     selectionEnd = getBoardCell(e);
     selecting = false;
@@ -319,11 +326,7 @@ async function finishDrawing(e) {
     draw();
     return;
   }
-  drawing = false;
   releasePointer(e);
-  await Promise.all(drawRequests);
-  drawRequests = [];
-  await fetchState();
 }
 
 canvas.addEventListener('pointerup', finishDrawing);
@@ -345,6 +348,21 @@ document.getElementById('clearBtn').addEventListener('click', async () => {
   await fetch(`${API}/clear`, { method: 'POST' });
   fetchState();
 });
+
+sizeBtn.addEventListener('click', async () => {
+  const rows = Number(rowsInput.value);
+  const cols = Number(colsInput.value);
+  const res = await fetch(`${API}/size`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rows, cols }),
+  });
+  if (res.ok) await fetchState();
+});
+
+[rowsInput, colsInput].forEach(input => input.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') sizeBtn.click();
+}));
 
 copyPatternBtn.addEventListener('click', () => {
   selecting = true;

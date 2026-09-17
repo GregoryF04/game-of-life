@@ -6,7 +6,9 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <canvas id="board"></canvas>
+  <main class="boardViewport">
+    <canvas id="board"></canvas>
+  </main>
   <div class="controls">
     <button id="playPauseBtn">Play</button>
     <button id="stepBtn">Stop/Step</button>
@@ -20,6 +22,9 @@
       <input type="range" min="1" max="30" value="8" class="slider" id="speedRange" aria-label="Speed control">
     </label>
     <output id="generationValue" class="generationValue">Generation 0 | 0.0 FPS</output>
+    <label class="sizeControl">Rows <input id="rowsInput" type="number" min="10" max="300" value="80"></label>
+    <label class="sizeControl">Columns <input id="colsInput" type="number" min="10" max="400" value="160"></label>
+    <button id="sizeBtn">Resize grid</button>
   </div>
   <script src="script.js"></script>
 </body>

@@ -5,7 +5,7 @@ const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
-const ROWS = 80, COLS = 160;
+let ROWS = 80, COLS = 160;
 const MIN_FPS = 1, MAX_FPS = 30;
 const IDLE_TIMEOUT_MS = 60_000;
 const WATCHDOG_INTERVAL_MS = 15_000;
@@ -93,7 +93,7 @@ const api = express.Router();
 
 api.get('/state', (req, res) => {
   lastClientSeen = Date.now();
-  res.json({ grid, ages: serializeAges(), genCount, running, fps });
+  res.json({ grid, ages: serializeAges(), genCount, running, fps, rows: ROWS, cols: COLS });
 });
 
 api.post('/toggle', (req, res) => {
@@ -118,6 +118,21 @@ api.post('/grid', (req, res) => {
   ages = makeAgesFromGrid();
   genCount = 0;
   res.json({ ok: true });
+});
+
+api.post('/size', (req, res) => {
+  const rows = Number(req.body.rows);
+  const cols = Number(req.body.cols);
+  if (!Number.isInteger(rows) || !Number.isInteger(cols) || rows < 10 || rows > 300 || cols < 10 || cols > 400) {
+    return res.status(400).json({ ok: false, error: 'Grid size must be between 10x10 and 300x400' });
+  }
+
+  ROWS = rows;
+  COLS = cols;
+  grid = makeEmptyGrid();
+  ages = makeAgeGrid();
+  genCount = 0;
+  res.json({ ok: true, rows, cols });
 });
 
 api.post('/play', (req, res) => { startLoop(); res.json({ ok: true }); });

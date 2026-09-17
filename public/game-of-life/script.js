@@ -34,6 +34,8 @@ let pinchStart = null;
 let zoom = 1;
 let panX = 0;
 let panY = 0;
+let tapStart = null;
+let tapMoved = false;
 let cellColor = localStorage.getItem('gol-cell-color') || '#00ff66';
 let backgroundColor = localStorage.getItem('gol-background-color') || '#050807';
 let lastGeneration = null;
@@ -239,9 +241,10 @@ function drawCell(row, col) {
 }
 
 canvas.addEventListener('pointerdown', async (e) => {
-  e.preventDefault();
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType });
   if (pointers.size >= 2) {
+    tapStart = null;
+    tapMoved = true;
     const [first, second] = [...pointers.values()];
     pinchStart = {
       distance: Math.hypot(second.x - first.x, second.y - first.y),
@@ -255,6 +258,7 @@ canvas.addEventListener('pointerdown', async (e) => {
   }
   const { row, col } = getBoardCell(e);
   if (pendingPattern) {
+    e.preventDefault();
     if (!pendingPatternPosition) {
       pendingPatternPosition = { row, col };
       drawPendingPattern();
@@ -265,6 +269,7 @@ canvas.addEventListener('pointerdown', async (e) => {
     return;
   }
   if (selecting) {
+    e.preventDefault();
     activePointerId = e.pointerId;
     selectionStart = { row, col };
     selectionEnd = { row, col };
@@ -272,7 +277,8 @@ canvas.addEventListener('pointerdown', async (e) => {
     drawSelection();
     return;
   }
-  drawCell(row, col);
+  tapStart = { x: e.clientX, y: e.clientY, row, col, pointerId: e.pointerId };
+  tapMoved = false;
 });
 
 canvas.addEventListener('pointermove', (e) => {
@@ -298,20 +304,28 @@ canvas.addEventListener('pointermove', (e) => {
     drawPendingPattern();
     return;
   }
-  if (e.pointerId !== activePointerId) return;
-  e.preventDefault();
-  const { row, col } = getBoardCell(e);
-  if (selecting) {
+  if (selecting && e.pointerId === activePointerId) {
+    e.preventDefault();
+    const { row, col } = getBoardCell(e);
     selectionEnd = { row, col };
     drawSelection();
     return;
   }
+  if (tapStart?.pointerId === e.pointerId &&
+      Math.hypot(e.clientX - tapStart.x, e.clientY - tapStart.y) > 8) {
+    tapMoved = true;
+  }
 });
 
 async function finishDrawing(e) {
+  const wasTap = tapStart?.pointerId === e.pointerId && !tapMoved;
   pointers.delete(e.pointerId);
   if (pointers.size < 2) pinchStart = null;
-  if (!selecting || e.pointerId !== activePointerId) return;
+  if (!selecting || e.pointerId !== activePointerId) {
+    if (wasTap && e.type === 'pointerup') drawCell(tapStart.row, tapStart.col);
+    tapStart = null;
+    return;
+  }
   if (selecting) {
     selectionEnd = getBoardCell(e);
     selecting = false;

@@ -20,8 +20,9 @@ html, body {
 #board {
   display: block;
   position: relative;
-  touch-action: none;
+  touch-action: pan-x pan-y;
   transform-origin: 0 0;
+  user-select: none;
 }
 
 .controls {

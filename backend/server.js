@@ -164,5 +164,19 @@ api.post('/rule', (req, res) => {
 
 app.use('/api', api);
 
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    uptimeSeconds: Math.floor(process.uptime()),
+    memory: process.memoryUsage(),
+    game: {
+      genCount,
+      running,
+      rows: ROWS,
+      cols: COLS,
+    },
+  });
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Game of Life running on port ${PORT}`));

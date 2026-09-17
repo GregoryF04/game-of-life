@@ -16,17 +16,22 @@ const pastePatternBtn = document.getElementById('pastePatternBtn');
 
 let grid = [];
 let ages = [];
-let revision = 0;
 let running = false;
 let pollTimer = null;
 let pendingPattern = null;
 let pendingPatternPosition = null;
 let drawing = false;
+let drawingValue = 1;
 let selecting = false;
 let selectionStart = null;
 let selectionEnd = null;
 let activePointerId = null;
 let drawRequests = [];
+const pointers = new Map();
+let pinchStart = null;
+let zoom = 1;
+let panX = 0;
+let panY = 0;
 let cellColor = localStorage.getItem('gol-cell-color') || '#00ff66';
 let backgroundColor = localStorage.getItem('gol-background-color') || '#050807';
 let lastGeneration = null;
@@ -39,7 +44,7 @@ let actualFps = 0;
 // already refreshes the state itself.
 function syncPolling() {
   if (running && !pollTimer) {
-    pollTimer = setInterval(fetchChanges, DISPLAY_UPDATE_MS);
+    pollTimer = setInterval(fetchState, DISPLAY_UPDATE_MS);
   } else if (!running && pollTimer) {
     clearInterval(pollTimer);
     pollTimer = null;
@@ -51,7 +56,6 @@ async function fetchState() {
   const data = await res.json();
   grid = data.grid;
   ages = data.ages || grid.map(row => row.map(cell => (cell ? 1 : 0)));
-  revision = data.revision ?? revision;
   running = data.running;
   const now = performance.now();
   if (lastGeneration !== null && data.genCount > lastGeneration && lastGenerationTime !== null) {
@@ -65,40 +69,6 @@ async function fetchState() {
   draw();
   playPauseBtn.textContent = running ? 'Pause' : 'Play';
   syncPolling();
-}
-
-async function fetchChanges() {
-  if (!running || fetchChanges.inFlight) return;
-  fetchChanges.inFlight = true;
-  try {
-    const res = await fetch(`${API}/changes?since=${revision}`);
-    const data = await res.json();
-    if (data.full) {
-      grid = data.grid;
-      ages = data.ages || grid.map(row => row.map(cell => (cell ? 1 : 0)));
-    } else {
-      data.changes.forEach(change => {
-        grid[change.row][change.col] = change.alive;
-        ages[change.row][change.col] = change.age;
-      });
-    }
-    revision = data.revision;
-    running = data.running;
-    const now = performance.now();
-    if (lastGeneration !== null && data.genCount > lastGeneration && lastGenerationTime !== null) {
-      actualFps = (data.genCount - lastGeneration) / ((now - lastGenerationTime) / 1000);
-    }
-    lastGeneration = data.genCount;
-    lastGenerationTime = now;
-    generationValue.textContent = `Generation ${data.genCount} | ${actualFps.toFixed(1)} FPS`;
-    speedRange.value = data.fps;
-    speedValue.textContent = `${data.fps} FPS`;
-    draw();
-    playPauseBtn.textContent = running ? 'Pause' : 'Play';
-    syncPolling();
-  } finally {
-    fetchChanges.inFlight = false;
-  }
 }
 
 function draw() {
@@ -155,7 +125,9 @@ function createPattern(selection = null) {
 }
 
 async function copyPattern(selection) {
-  await navigator.clipboard.writeText(JSON.stringify(createPattern(selection)));
+  const patternText = JSON.stringify(createPattern(selection));
+  localStorage.setItem('gol-last-pattern', patternText);
+  await navigator.clipboard.writeText(patternText);
 }
 
 function parsePattern(patternText) {
@@ -240,8 +212,8 @@ function releasePointer(e) {
 }
 
 function drawCell(row, col) {
-  if (row < 0 || row >= ROWS || col < 0 || col >= COLS || !grid[row] || grid[row][col]) return;
-  grid[row][col] = 1;
+  if (row < 0 || row >= ROWS || col < 0 || col >= COLS || !grid[row] || grid[row][col] === drawingValue) return;
+  grid[row][col] = drawingValue;
   draw();
   drawRequests.push(fetch(`${API}/toggle`, {
     method: 'POST',
@@ -252,8 +224,28 @@ function drawCell(row, col) {
 
 canvas.addEventListener('pointerdown', async (e) => {
   e.preventDefault();
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType });
+  if (pointers.size >= 2) {
+    drawing = false;
+    const [first, second] = [...pointers.values()];
+    pinchStart = {
+      distance: Math.hypot(second.x - first.x, second.y - first.y),
+      midpoint: { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 },
+      zoom,
+      panX,
+      panY,
+    };
+    releasePointer(e);
+    return;
+  }
   const { row, col } = getBoardCell(e);
   if (pendingPattern) {
+    if (!pendingPatternPosition) {
+      pendingPatternPosition = { row, col };
+      drawPendingPattern();
+      return;
+    }
+    pendingPatternPosition = { row, col };
     await pastePatternAt(row, col);
     return;
   }
@@ -266,12 +258,35 @@ canvas.addEventListener('pointerdown', async (e) => {
     return;
   }
   drawing = true;
+  drawingValue = grid[row]?.[col] ? 0 : 1;
   activePointerId = e.pointerId;
   canvas.setPointerCapture(activePointerId);
   drawCell(row, col);
 });
 
 canvas.addEventListener('pointermove', (e) => {
+  if (pointers.has(e.pointerId)) pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType });
+  if (pinchStart && pointers.size >= 2) {
+    e.preventDefault();
+    const [first, second] = [...pointers.values()];
+    const distance = Math.hypot(second.x - first.x, second.y - first.y);
+    const midpoint = { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 };
+    const nextZoom = Math.max(0.35, Math.min(4, pinchStart.zoom * distance / pinchStart.distance));
+    const boardX = (pinchStart.midpoint.x - pinchStart.panX) / pinchStart.zoom;
+    const boardY = (pinchStart.midpoint.y - pinchStart.panY) / pinchStart.zoom;
+    zoom = nextZoom;
+    panX = midpoint.x - boardX * zoom;
+    panY = midpoint.y - boardY * zoom;
+    canvas.style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`;
+    return;
+  }
+  if (pendingPattern) {
+    e.preventDefault();
+    const { row, col } = getBoardCell(e);
+    pendingPatternPosition = { row, col };
+    drawPendingPattern();
+    return;
+  }
   if (e.pointerId !== activePointerId) return;
   e.preventDefault();
   const { row, col } = getBoardCell(e);
@@ -285,6 +300,8 @@ canvas.addEventListener('pointermove', (e) => {
 });
 
 async function finishDrawing(e) {
+  pointers.delete(e.pointerId);
+  if (pointers.size < 2) pinchStart = null;
   if ((!drawing && !selecting) || e.pointerId !== activePointerId) return;
   if (selecting) {
     selectionEnd = getBoardCell(e);
@@ -311,16 +328,6 @@ async function finishDrawing(e) {
 
 canvas.addEventListener('pointerup', finishDrawing);
 canvas.addEventListener('pointercancel', finishDrawing);
-
-canvas.addEventListener('mousemove', (e) => {
-  if (!pendingPattern) return;
-  const rect = canvas.getBoundingClientRect();
-  pendingPatternPosition = {
-    col: Math.floor((e.clientX - rect.left) / CELL_SIZE),
-    row: Math.floor((e.clientY - rect.top) / CELL_SIZE),
-  };
-  drawPendingPattern();
-});
 
 playPauseBtn.addEventListener('click', async () => {
   await fetch(`${API}/${running ? 'pause' : 'play'}`, { method: 'POST' });
@@ -349,7 +356,14 @@ copyPatternBtn.addEventListener('click', () => {
 
 pastePatternBtn.addEventListener('click', async () => {
   try {
-    pendingPattern = parsePattern(await navigator.clipboard.readText());
+    let patternText = '';
+    try {
+      patternText = await navigator.clipboard.readText();
+    } catch {
+      patternText = localStorage.getItem('gol-last-pattern') || '';
+    }
+    if (!patternText) throw new Error('No copied pattern found');
+    pendingPattern = parsePattern(patternText);
     pendingPatternPosition = null;
     pastePatternBtn.textContent = 'Click board to place';
     canvas.style.cursor = 'crosshair';

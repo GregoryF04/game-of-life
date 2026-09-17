@@ -17,6 +17,7 @@ html, body {
   top: 0;
   left: 0;
   touch-action: none;
+  transform-origin: 0 0;
 }
 
 .controls {

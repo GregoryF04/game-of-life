@@ -29,12 +29,19 @@ html, body {
   top: 12px;
   left: 12px;
   display: flex;
+  flex-direction: column;
   gap: 8px;
   background: rgba(20, 20, 20, 0.7);
   padding: 8px;
   border-radius: 8px;
   backdrop-filter: blur(4px);
   z-index: 10;
+}
+
+.controlRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 button {
@@ -81,6 +88,9 @@ button:hover {
 @media (max-width: 760px) {
   .controls {
     max-width: calc(100vw - 24px);
+  }
+
+  .controlRow {
     flex-wrap: wrap;
   }
 }

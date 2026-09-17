@@ -14,6 +14,7 @@ let grid = makeEmptyGrid();
 let ages = makeAgeGrid();
 let genCount = 0;
 let running = false;
+let highLife = false;
 let fps = 8;
 let intervalHandle = null;
 let lastClientSeen = Date.now();
@@ -54,7 +55,7 @@ function step() {
     for (let c = 0; c < COLS; c++) {
       const alive = grid[r][c] === 1;
       const n = countNeighbors(grid, r, c);
-      next[r][c] = alive ? (n === 2 || n === 3 ? 1 : 0) : (n === 3 ? 1 : 0);
+      next[r][c] = alive ? (n === 2 || n === 3 ? 1 : 0) : (n === 3 || (highLife && n === 6) ? 1 : 0);
       nextAges[r][c] = next[r][c] ? (alive ? ages[r][c] + 1 : 1) : 0;
     }
   }
@@ -93,7 +94,7 @@ const api = express.Router();
 
 api.get('/state', (req, res) => {
   lastClientSeen = Date.now();
-  res.json({ grid, ages: serializeAges(), genCount, running, fps, rows: ROWS, cols: COLS });
+  res.json({ grid, ages: serializeAges(), genCount, running, highLife, fps, rows: ROWS, cols: COLS });
 });
 
 api.post('/toggle', (req, res) => {
@@ -154,6 +155,11 @@ api.post('/speed', (req, res) => {
   fps = clampFps(req.body.fps);
   if (running) startLoop();
   res.json({ ok: true, fps });
+});
+
+api.post('/rule', (req, res) => {
+  highLife = Boolean(req.body.highLife);
+  res.json({ ok: true, highLife });
 });
 
 app.use('/api', api);

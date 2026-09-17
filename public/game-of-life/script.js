@@ -17,6 +17,7 @@ const pastePatternBtn = document.getElementById('pastePatternBtn');
 const rowsInput = document.getElementById('rowsInput');
 const colsInput = document.getElementById('colsInput');
 const sizeBtn = document.getElementById('sizeBtn');
+const highLifeToggle = document.getElementById('highLifeToggle');
 
 let grid = [];
 let ages = [];
@@ -66,6 +67,7 @@ async function fetchState() {
   grid = data.grid;
   ages = data.ages || grid.map(row => row.map(cell => (cell ? 1 : 0)));
   running = data.running;
+  highLifeToggle.checked = data.highLife;
   const now = performance.now();
   if (lastGeneration !== null && data.genCount > lastGeneration && lastGenerationTime !== null) {
     actualFps = (data.genCount - lastGeneration) / ((now - lastGenerationTime) / 1000);
@@ -358,6 +360,15 @@ sizeBtn.addEventListener('click', async () => {
     body: JSON.stringify({ rows, cols }),
   });
   if (res.ok) await fetchState();
+});
+
+highLifeToggle.addEventListener('change', async () => {
+  await fetch(`${API}/rule`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ highLife: highLifeToggle.checked }),
+  });
+  await fetchState();
 });
 
 [rowsInput, colsInput].forEach(input => input.addEventListener('keydown', (e) => {

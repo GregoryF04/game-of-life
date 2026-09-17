@@ -118,3 +118,12 @@ button:hover {
   border: 1px solid #444;
   border-radius: 4px;
 }
+
+.ruleControl {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: #fff;
+  font: 13px sans-serif;
+  white-space: nowrap;
+}

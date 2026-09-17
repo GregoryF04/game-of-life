@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Elementary Cellular Automaton</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="page">
+    <header class="topbar">
+      <a class="backLink" href="/">Mini Games</a>
+      <h1>Elementary Cellular Automaton</h1>
+      <div class="toolbar">
+        <label class="field">Preset
+          <select id="presetSelect">
+            <option value="">Choose rule</option>
+            <option value="30">Rule 30</option>
+            <option value="90">Rule 90</option>
+            <option value="110">Rule 110</option>
+            <option value="184">Rule 184</option>
+            <option value="54">Rule 54</option>
+          </select>
+        </label>
+        <label class="field">Rule number
+          <input id="ruleNumber" type="number" min="0" max="255" value="30">
+        </label>
+        <label class="switchField">
+          <input id="randomInitial" type="checkbox">
+          <span>Random initial row</span>
+        </label>
+        <button id="generateBtn" type="button">Generate</button>
+        <button id="animateBtn" type="button">Animate</button>
+      </div>
+    </header>
+
+    <section class="rulePanel" aria-label="Wolfram rule controls">
+      <div class="ruleBits" id="ruleBits"></div>
+      <p class="ruleHint">Each output bit is the next cell state for the pattern above it.</p>
+    </section>
+
+    <main class="boardViewport">
+      <canvas id="board" aria-label="Elementary cellular automaton output"></canvas>
+    </main>
+  </main>
+  <script src="script.js"></script>
+</body>
+</html>

@@ -10,42 +10,67 @@
     .card { background: #1a1a1a; padding: 15px 20px; border-radius: 8px; min-width: 150px; }
     .card h3 { margin: 0 0 5px; font-size: 0.85em; color: #888; }
     .card .value { font-size: 1.5em; font-weight: bold; }
-    canvas { max-height: 300px; }
+    .charts { display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 20px; }
+    .chartContainer { flex: 1; min-width: 300px; background: #1a1a1a; padding: 15px; border-radius: 8px; }
+    canvas { max-height: 250px; }
+    .logBox { background: #1a1a1a; padding: 15px; border-radius: 8px; }
+    .logBox h3 { margin-top: 0; color: #888; }
+    pre { background: #000; padding: 10px; border-radius: 6px; overflow-x: auto; font-size: 0.8em; max-height: 300px; overflow-y: auto; }
   </style>
 </head>
 <body>
   <h1>Server Status</h1>
   <div class="stats" id="statsCards"></div>
-  <canvas id="memChart"></canvas>
+
+  <div class="charts">
+    <div class="chartContainer">
+      <canvas id="memChart"></canvas>
+    </div>
+    <div class="chartContainer">
+      <canvas id="cpuChart"></canvas>
+    </div>
+  </div>
+
+  <div class="logBox">
+    <h3>Docker Stats Log (last 30 entries)</h3>
+    <pre id="dockerStatsLog">Loading...</pre>
+  </div>
 
   <script>
-    const memHistory = [];
-    const timeLabels = [];
     const MAX_POINTS = 60;
+    const memHistory = [];
+    const cpuHistory = [];
+    const timeLabels = [];
 
-    const ctx = document.getElementById('memChart').getContext('2d');
-    const chart = new Chart(ctx, {
+    const memCtx = document.getElementById('memChart').getContext('2d');
+    const memChart = new Chart(memCtx, {
       type: 'line',
       data: {
         labels: timeLabels,
-        datasets: [{
-          label: 'RSS Memory (MB)',
-          data: memHistory,
-          borderColor: '#00ff66',
-          tension: 0.3,
-        }],
+        datasets: [{ label: 'RSS Memory (MB)', data: memHistory, borderColor: '#00ff66', tension: 0.3 }],
       },
       options: {
         responsive: true,
-        scales: {
-          y: { beginAtZero: true, ticks: { color: '#888' } },
-          x: { ticks: { color: '#888' } },
-        },
+        scales: { y: { beginAtZero: true, ticks: { color: '#888' } }, x: { ticks: { color: '#888' } } },
         plugins: { legend: { labels: { color: '#eee' } } },
       },
     });
 
-    async function poll() {
+    const cpuCtx = document.getElementById('cpuChart').getContext('2d');
+    const cpuChart = new Chart(cpuCtx, {
+      type: 'line',
+      data: {
+        labels: timeLabels,
+        datasets: [{ label: 'CPU Usage (%)', data: cpuHistory, borderColor: '#ff9900', tension: 0.3 }],
+      },
+      options: {
+        responsive: true,
+        scales: { y: { beginAtZero: true, max: 100, ticks: { color: '#888' } }, x: { ticks: { color: '#888' } } },
+        plugins: { legend: { labels: { color: '#eee' } } },
+      },
+    });
+
+    async function pollHealth() {
       const res = await fetch('/health');
       const data = await res.json();
 
@@ -53,24 +78,37 @@
       const now = new Date().toLocaleTimeString();
 
       memHistory.push(rssMB);
+      cpuHistory.push(data.cpuPercent);
       timeLabels.push(now);
       if (memHistory.length > MAX_POINTS) {
         memHistory.shift();
+        cpuHistory.shift();
         timeLabels.shift();
       }
-      chart.update();
+      memChart.update();
+      cpuChart.update();
 
       document.getElementById('statsCards').innerHTML = `
         <div class="card"><h3>Status</h3><div class="value">${data.status}</div></div>
         <div class="card"><h3>Uptime</h3><div class="value">${Math.floor(data.uptimeSeconds / 60)}m</div></div>
         <div class="card"><h3>RSS Memory</h3><div class="value">${rssMB} MB</div></div>
+        <div class="card"><h3>CPU Usage</h3><div class="value">${data.cpuPercent}%</div></div>
         <div class="card"><h3>Generation</h3><div class="value">${data.game.genCount}</div></div>
         <div class="card"><h3>Sim Running</h3><div class="value">${data.game.running ? 'Yes' : 'No'}</div></div>
       `;
     }
 
-    poll();
-    setInterval(poll, 5000);
+    async function pollDockerStats() {
+      const res = await fetch('/docker-stats');
+      const data = await res.json();
+      document.getElementById('dockerStatsLog').textContent =
+        data.lines && data.lines.length ? data.lines.join('\n') : (data.error || 'No data yet');
+    }
+
+    pollHealth();
+    pollDockerStats();
+    setInterval(pollHealth, 5000);
+    setInterval(pollDockerStats, 15000);
   </script>
 </body>
 </html>

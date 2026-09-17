@@ -1,5 +1,6 @@
 const express = require('express');
 const path = require('path');
+const fs = require('fs');
 
 const app = express();
 app.use(express.json());
@@ -164,17 +165,44 @@ api.post('/rule', (req, res) => {
 
 app.use('/api', api);
 
+let lastCpuUsage = process.cpuUsage();
+let lastCpuCheckTime = Date.now();
+
 app.get('/health', (req, res) => {
+  const currentCpuUsage = process.cpuUsage();
+  const currentTime = Date.now();
+
+  const userDiff = currentCpuUsage.user - lastCpuUsage.user;
+  const systemDiff = currentCpuUsage.system - lastCpuUsage.system;
+  const elapsedMicros = (currentTime - lastCpuCheckTime) * 1000;
+  const cpuPercent = elapsedMicros > 0
+    ? ((userDiff + systemDiff) / elapsedMicros) * 100
+    : 0;
+
+  lastCpuUsage = currentCpuUsage;
+  lastCpuCheckTime = currentTime;
+
   res.json({
     status: 'ok',
     uptimeSeconds: Math.floor(process.uptime()),
     memory: process.memoryUsage(),
+    cpuPercent: Math.round(cpuPercent * 10) / 10,
     game: {
       genCount,
       running,
       rows: ROWS,
       cols: COLS,
     },
+  });
+});
+
+app.get('/docker-stats', (req, res) => {
+  fs.readFile('/app/docker-stats.log', 'utf8', (err, data) => {
+    if (err) {
+      return res.json({ lines: [], error: 'Log not available yet' });
+    }
+    const lines = data.trim().split('\n').filter(Boolean);
+    res.json({ lines: lines.slice(-30) });
   });
 });
 

@@ -8,3 +8,4 @@ services:
     cpus: 0.9
     volumes:
       - /home/opc/docker-stats.log:/app/docker-stats.log:ro
+      - /home/opc/gol-data:/app/data

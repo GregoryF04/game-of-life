@@ -10,6 +10,8 @@ let ROWS = 80, COLS = 160;
 const MIN_FPS = 1, MAX_FPS = 30;
 const IDLE_TIMEOUT_MS = 60_000;
 const WATCHDOG_INTERVAL_MS = 15_000;
+const STATE_FILE = '/app/data/state.json';
+const SAVE_DEBOUNCE_MS = 3000;
 
 let grid = makeEmptyGrid();
 let ages = makeAgeGrid();
@@ -19,6 +21,7 @@ let highLife = false;
 let fps = 8;
 let intervalHandle = null;
 let lastClientSeen = Date.now();
+let saveTimeout = null;
 
 function makeEmptyGrid() {
   return Array.from({ length: ROWS }, () => new Array(COLS).fill(0));
@@ -35,6 +38,49 @@ function makeAgesFromGrid() {
 function serializeAges() {
   return ages.map(row => Array.from(row));
 }
+
+function saveStateNow() {
+  const state = {
+    ROWS, COLS, genCount, highLife, fps,
+    grid,
+    ages: serializeAges(),
+  };
+  fs.writeFile(STATE_FILE, JSON.stringify(state), (err) => {
+    if (err) console.error('Failed to save state:', err);
+  });
+}
+
+function saveStateDebounced() {
+  if (saveTimeout) clearTimeout(saveTimeout);
+  saveTimeout = setTimeout(saveStateNow, SAVE_DEBOUNCE_MS);
+}
+
+function loadState() {
+  try {
+    const data = fs.readFileSync(STATE_FILE, 'utf8');
+    const state = JSON.parse(data);
+    ROWS = state.ROWS ?? ROWS;
+    COLS = state.COLS ?? COLS;
+    genCount = state.genCount ?? 0;
+    highLife = state.highLife ?? false;
+    fps = state.fps ?? 8;
+    if (Array.isArray(state.grid) && state.grid.length === ROWS) {
+      grid = state.grid;
+    } else {
+      grid = makeEmptyGrid();
+    }
+    if (Array.isArray(state.ages) && state.ages.length === ROWS) {
+      ages = state.ages.map(row => Uint32Array.from(row));
+    } else {
+      ages = makeAgeGrid();
+    }
+  } catch {
+    // файла нет — используем дефолты, это нормально при первом запуске
+  }
+}
+
+// Restore saved state (size, grid, rule, speed) now that ROWS/COLS/grid/ages exist.
+loadState();
 
 function countNeighbors(g, r, c) {
   let count = 0;
@@ -63,6 +109,7 @@ function step() {
   grid = next;
   ages = nextAges;
   genCount++;
+  saveStateDebounced();
 }
 
 function startLoop() {
@@ -106,6 +153,7 @@ api.post('/toggle', (req, res) => {
     grid[row][col] = grid[row][col] ? 0 : 1;
     ages[row][col] = grid[row][col] ? 1 : 0;
   }
+  saveStateDebounced();
   res.json({ ok: true });
 });
 
@@ -119,6 +167,7 @@ api.post('/grid', (req, res) => {
   grid = incomingGrid.map(row => row.map(cell => (cell ? 1 : 0)));
   ages = makeAgesFromGrid();
   genCount = 0;
+  saveStateDebounced();
   res.json({ ok: true });
 });
 
@@ -134,32 +183,37 @@ api.post('/size', (req, res) => {
   grid = makeEmptyGrid();
   ages = makeAgeGrid();
   genCount = 0;
+  saveStateDebounced();
   res.json({ ok: true, rows, cols });
 });
 
 api.post('/play', (req, res) => { startLoop(); res.json({ ok: true }); });
-api.post('/pause', (req, res) => { stopLoop(); res.json({ ok: true }); });
+api.post('/pause', (req, res) => { stopLoop(); saveStateDebounced(); res.json({ ok: true }); });
 api.post('/step', (req, res) => { stopLoop(); step(); res.json({ ok: true }); });
 api.post('/random', (req, res) => {
   grid = grid.map(row => row.map(() => (Math.random() < 0.25 ? 1 : 0)));
   ages = makeAgesFromGrid();
   genCount = 0;
+  saveStateDebounced();
   res.json({ ok: true });
 });
 api.post('/clear', (req, res) => {
   grid = makeEmptyGrid();
   ages = makeAgeGrid();
   genCount = 0;
+  saveStateDebounced();
   res.json({ ok: true });
 });
 api.post('/speed', (req, res) => {
   fps = clampFps(req.body.fps);
   if (running) startLoop();
+  saveStateDebounced();
   res.json({ ok: true, fps });
 });
 
 api.post('/rule', (req, res) => {
   highLife = Boolean(req.body.highLife);
+  saveStateDebounced();
   res.json({ ok: true, highLife });
 });
 
@@ -205,6 +259,17 @@ app.get('/docker-stats', (req, res) => {
     res.json({ lines: lines.slice(-30) });
   });
 });
+
+// Save the latest state synchronously before the process exits, so a
+// container restart/redeploy doesn't lose whatever happened in the last
+// few seconds before the debounced save would have fired.
+function shutdown() {
+  if (saveTimeout) clearTimeout(saveTimeout);
+  saveStateNow();
+  process.exit(0);
+}
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Game of Life running on port ${PORT}`));

@@ -2,36 +2,16 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Game of Life v0.2</title>
-  <link rel="stylesheet" href="style.css">
+  <title>Mini Games</title>
+  <style>
+    body { font-family: sans-serif; background: #111; color: #eee; text-align: center; padding: 40px; }
+    a { display: inline-block; margin: 10px; padding: 15px 25px; background: #222; color: #fff; text-decoration: none; border-radius: 8px; }
+    a:hover { background: #333; }
+  </style>
 </head>
 <body>
-  <main class="boardViewport">
-    <canvas id="board"></canvas>
-  </main>
-  <div class="controls">
-    <div class="controlRow actionRow">
-      <button id="playPauseBtn">Play</button>
-      <button id="stepBtn">Stop/Step</button>
-      <button id="randomBtn">Random</button>
-      <button id="clearBtn">Clear</button>
-      <button id="copyPatternBtn" title="Copy the current pattern">Copy pattern</button>
-      <button id="pastePatternBtn" title="Paste a copied pattern">Paste pattern</button>
-    </div>
-    <div class="controlRow settingsRow">
-      <label class="speedControl">Speed <output id="speedValue">8 FPS</output>
-        <input type="range" min="1" max="30" value="8" class="slider" id="speedRange" aria-label="Speed control">
-      </label>
-      <label class="colorControl">Cells <input id="cellColor" type="color" aria-label="Cell color"></label>
-      <label class="colorControl">Background <input id="backgroundColor" type="color" aria-label="Background color"></label>
-      <label class="sizeControl">Rows <input id="rowsInput" type="number" min="10" max="300" value="80"></label>
-      <label class="sizeControl">Columns <input id="colsInput" type="number" min="10" max="400" value="160"></label>
-      <button id="sizeBtn">Resize grid</button>
-    </div>
-    <div class="controlRow statusRow">
-      <output id="generationValue" class="generationValue">Generation 0 | 0.0 FPS</output>
-    </div>
-  </div>
-  <script src="script.js"></script>
+  <h1>Mini Games</h1>
+  <a href="/game-of-life/">Game of Life</a>
+  <!-- сюда добавятся ссылки на новые игры -->
 </body>
 </html>

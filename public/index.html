@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Game of Life</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <canvas id="board"></canvas>
+  <div class="controls">
+    <button id="playPauseBtn">Play</button>
+    <button id="stepBtn">Step</button>
+    <button id="randomBtn">Random</button>
+    <button id="clearBtn">Clear</button>
+    <button id="copyPatternBtn" title="Copy the current pattern">Copy pattern</button>
+    <button id="pastePatternBtn" title="Paste a copied pattern">Paste pattern</button>
+    <label class="colorControl">Cells <input id="cellColor" type="color" aria-label="Cell color"></label>
+    <label class="colorControl">Background <input id="backgroundColor" type="color" aria-label="Background color"></label>
+  </div>
+  <script src="script.js"></script>
+</body>
+</html>

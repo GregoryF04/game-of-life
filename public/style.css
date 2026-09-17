@@ -16,6 +16,7 @@ html, body {
   position: fixed;
   top: 0;
   left: 0;
+  touch-action: none;
 }
 
 .controls {
@@ -49,7 +50,16 @@ button:hover {
   display: flex;
   align-items: center;
   gap: 5px;
-  color: #ddd;
+  color: #fff;
+  font: 13px sans-serif;
+  white-space: nowrap;
+}
+
+.speedControl {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #fff;
   font: 13px sans-serif;
   white-space: nowrap;
 }
@@ -68,4 +78,10 @@ button:hover {
     max-width: calc(100vw - 24px);
     flex-wrap: wrap;
   }
+}
+
+.generationValue {
+  color: #fff;
+  font: 13px sans-serif;
+  white-space: nowrap;
 }

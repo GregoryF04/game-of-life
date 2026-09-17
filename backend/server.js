@@ -9,9 +9,13 @@ const ROWS = 80, COLS = 160;
 const MIN_FPS = 1, MAX_FPS = 30;
 const IDLE_TIMEOUT_MS = 60_000;
 const WATCHDOG_INTERVAL_MS = 15_000;
+const MAX_CHANGE_HISTORY = 300;
 
 let grid = makeEmptyGrid();
+let ages = makeAgeGrid();
 let genCount = 0;
+let revision = 0;
+let changeHistory = [];
 let running = false;
 let fps = 8;
 let intervalHandle = null;
@@ -19,6 +23,34 @@ let lastClientSeen = Date.now();
 
 function makeEmptyGrid() {
   return Array.from({ length: ROWS }, () => new Array(COLS).fill(0));
+}
+
+function makeAgeGrid() {
+  return Array.from({ length: ROWS }, () => new Uint32Array(COLS));
+}
+
+function makeAgesFromGrid() {
+  return grid.map(row => Uint32Array.from(row, cell => (cell ? 1 : 0)));
+}
+
+function serializeAges() {
+  return ages.map(row => Array.from(row));
+}
+
+function publishChanges(changes) {
+  revision++;
+  changeHistory.push({ revision, changes });
+  if (changeHistory.length > MAX_CHANGE_HISTORY) changeHistory.shift();
+}
+
+function snapshotChanges() {
+  const changes = [];
+  for (let row = 0; row < ROWS; row++) {
+    for (let col = 0; col < COLS; col++) {
+      changes.push({ row, col, alive: grid[row][col], age: ages[row][col] });
+    }
+  }
+  return changes;
 }
 
 function countNeighbors(g, r, c) {
@@ -36,15 +68,23 @@ function countNeighbors(g, r, c) {
 
 function step() {
   const next = makeEmptyGrid();
+  const nextAges = makeAgeGrid();
+  const changes = [];
   for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
       const alive = grid[r][c] === 1;
       const n = countNeighbors(grid, r, c);
       next[r][c] = alive ? (n === 2 || n === 3 ? 1 : 0) : (n === 3 ? 1 : 0);
+      nextAges[r][c] = next[r][c] ? (alive ? ages[r][c] + 1 : 1) : 0;
+      if (next[r][c] !== grid[r][c] || nextAges[r][c] !== ages[r][c]) {
+        changes.push({ row: r, col: c, alive: next[r][c], age: nextAges[r][c] });
+      }
     }
   }
   grid = next;
+  ages = nextAges;
   genCount++;
+  publishChanges(changes);
 }
 
 function startLoop() {
@@ -77,7 +117,31 @@ const api = express.Router();
 
 api.get('/state', (req, res) => {
   lastClientSeen = Date.now();
-  res.json({ grid, genCount, running, fps });
+  res.json({ grid, ages: serializeAges(), genCount, running, fps, revision });
+});
+
+api.get('/changes', (req, res) => {
+  lastClientSeen = Date.now();
+  const since = Number(req.query.since);
+  const oldestRevision = changeHistory[0]?.revision ?? revision + 1;
+  if (!Number.isInteger(since) || since < oldestRevision - 1) {
+    return res.json({ full: true, grid, ages: serializeAges(), genCount, running, fps, revision });
+  }
+
+  const latestChanges = new Map();
+  changeHistory
+    .filter(entry => entry.revision > since)
+    .forEach(entry => entry.changes.forEach(change => {
+      latestChanges.set(`${change.row}:${change.col}`, change);
+    }));
+  res.json({
+    full: false,
+    changes: [...latestChanges.values()],
+    genCount,
+    running,
+    fps,
+    revision,
+  });
 });
 
 api.post('/toggle', (req, res) => {
@@ -86,6 +150,8 @@ api.post('/toggle', (req, res) => {
   if (Number.isInteger(row) && Number.isInteger(col) &&
       row >= 0 && row < ROWS && col >= 0 && col < COLS) {
     grid[row][col] = grid[row][col] ? 0 : 1;
+    ages[row][col] = grid[row][col] ? 1 : 0;
+    publishChanges([{ row, col, alive: grid[row][col], age: ages[row][col] }]);
   }
   res.json({ ok: true });
 });
@@ -98,7 +164,9 @@ api.post('/grid', (req, res) => {
   }
 
   grid = incomingGrid.map(row => row.map(cell => (cell ? 1 : 0)));
+  ages = makeAgesFromGrid();
   genCount = 0;
+  publishChanges(snapshotChanges());
   res.json({ ok: true });
 });
 
@@ -107,12 +175,16 @@ api.post('/pause', (req, res) => { stopLoop(); res.json({ ok: true }); });
 api.post('/step', (req, res) => { stopLoop(); step(); res.json({ ok: true }); });
 api.post('/random', (req, res) => {
   grid = grid.map(row => row.map(() => (Math.random() < 0.25 ? 1 : 0)));
+  ages = makeAgesFromGrid();
   genCount = 0;
+  publishChanges(snapshotChanges());
   res.json({ ok: true });
 });
 api.post('/clear', (req, res) => {
   grid = makeEmptyGrid();
+  ages = makeAgeGrid();
   genCount = 0;
+  publishChanges(snapshotChanges());
   res.json({ ok: true });
 });
 api.post('/speed', (req, res) => {

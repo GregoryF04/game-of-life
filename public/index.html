@@ -2,20 +2,24 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Game of Life v0.1</title>
+  <title>Game of Life v0.2</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <canvas id="board"></canvas>
   <div class="controls">
     <button id="playPauseBtn">Play</button>
-    <button id="stepBtn">Step</button>
+    <button id="stepBtn">Stop/Step</button>
     <button id="randomBtn">Random</button>
     <button id="clearBtn">Clear</button>
     <button id="copyPatternBtn" title="Copy the current pattern">Copy pattern</button>
     <button id="pastePatternBtn" title="Paste a copied pattern">Paste pattern</button>
     <label class="colorControl">Cells <input id="cellColor" type="color" aria-label="Cell color"></label>
     <label class="colorControl">Background <input id="backgroundColor" type="color" aria-label="Background color"></label>
+    <label class="speedControl">Speed <output id="speedValue">8 FPS</output>
+      <input type="range" min="1" max="30" value="8" class="slider" id="speedRange" aria-label="Speed control">
+    </label>
+    <output id="generationValue" class="generationValue">Generation 0 | 0.0 FPS</output>
   </div>
   <script src="script.js"></script>
 </body>

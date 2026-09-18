@@ -37,10 +37,17 @@
   </div>
 
   <div class="logBox">
-    <h3>Host Server Info</h3>
-    <div class="stats" id="hostStatsCards"></div>
+  <h3>Host Server Info</h3>
+  <div class="stats" id="hostStatsCards"></div>
+  <div class="charts" style="margin-top: 15px;">
+    <div class="chartContainer">
+      <canvas id="stealChart"></canvas>
+    </div>
+    <div class="chartContainer">
+      <canvas id="hostMemChart"></canvas>
+    </div>
   </div>
-
+</div>
   <script>
     const MAX_POINTS = 60;
     const memHistory = [];
@@ -75,7 +82,43 @@
       },
     });
 
-    async function pollHostStats() {
+    const stealHistory = [];
+const hostMemHistory = [];
+const hostSwapHistory = [];
+const hostTimeLabels = [];
+
+const stealCtx = document.getElementById('stealChart').getContext('2d');
+const stealChart = new Chart(stealCtx, {
+  type: 'line',
+  data: {
+    labels: hostTimeLabels,
+    datasets: [{ label: 'CPU Steal (%)', data: stealHistory, borderColor: '#ff3366', tension: 0.3 }],
+  },
+  options: {
+    responsive: true,
+    scales: { y: { beginAtZero: true, max: 100, ticks: { color: '#888' } }, x: { ticks: { color: '#888' } } },
+    plugins: { legend: { labels: { color: '#eee' } } },
+  },
+});
+
+const hostMemCtx = document.getElementById('hostMemChart').getContext('2d');
+const hostMemChart = new Chart(hostMemCtx, {
+  type: 'line',
+  data: {
+    labels: hostTimeLabels,
+    datasets: [
+      { label: 'Host RAM Used (%)', data: hostMemHistory, borderColor: '#00ccff', tension: 0.3 },
+      { label: 'Swap Used (%)', data: hostSwapHistory, borderColor: '#ffcc00', tension: 0.3 },
+    ],
+  },
+  options: {
+    responsive: true,
+    scales: { y: { beginAtZero: true, max: 100, ticks: { color: '#888' } }, x: { ticks: { color: '#888' } } },
+    plugins: { legend: { labels: { color: '#eee' } } },
+  },
+});
+
+async function pollHostStats() {
   const res = await fetch('/host-stats');
   const data = await res.json();
 
@@ -89,6 +132,20 @@
     ? (100 - (data.swap.freeKB / data.swap.totalKB) * 100).toFixed(1)
     : '0.0';
   const uptimeHours = (data.hostUptimeSeconds / 3600).toFixed(1);
+  const now = new Date().toLocaleTimeString();
+
+  stealHistory.push(data.cpuStealPercent);
+  hostMemHistory.push(Number(memUsedPct));
+  hostSwapHistory.push(Number(swapUsedPct));
+  hostTimeLabels.push(now);
+  if (stealHistory.length > MAX_POINTS) {
+    stealHistory.shift();
+    hostMemHistory.shift();
+    hostSwapHistory.shift();
+    hostTimeLabels.shift();
+  }
+  stealChart.update();
+  hostMemChart.update();
 
   document.getElementById('hostStatsCards').innerHTML = `
     <div class="card"><h3>CPU Steal</h3><div class="value">${data.cpuStealPercent}%</div></div>

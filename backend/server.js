@@ -260,6 +260,19 @@ app.get('/docker-stats', (req, res) => {
   });
 });
 
+app.get('/host-stats', (req, res) => {
+  fs.readFile('/app/host-stats.json', 'utf8', (err, data) => {
+    if (err) {
+      return res.json({ error: 'Host stats not available yet' });
+    }
+    try {
+      res.json(JSON.parse(data));
+    } catch {
+      res.json({ error: 'Host stats file malformed' });
+    }
+  });
+});
+
 // Save the latest state synchronously before the process exits, so a
 // container restart/redeploy doesn't lose whatever happened in the last
 // few seconds before the debounced save would have fired.

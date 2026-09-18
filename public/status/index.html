@@ -36,6 +36,11 @@
     <pre id="dockerStatsLog">Loading...</pre>
   </div>
 
+  <div class="logBox">
+    <h3>Host Server Info</h3>
+    <div class="stats" id="hostStatsCards"></div>
+  </div>
+
   <script>
     const MAX_POINTS = 60;
     const memHistory = [];
@@ -69,6 +74,34 @@
         plugins: { legend: { labels: { color: '#eee' } } },
       },
     });
+
+    async function pollHostStats() {
+  const res = await fetch('/host-stats');
+  const data = await res.json();
+
+  if (data.error) {
+    document.getElementById('hostStatsCards').innerHTML = `<div class="card"><h3>Error</h3><div class="value">${data.error}</div></div>`;
+    return;
+  }
+
+  const memUsedPct = (100 - (data.memory.availableKB / data.memory.totalKB) * 100).toFixed(1);
+  const swapUsedPct = data.swap.totalKB > 0
+    ? (100 - (data.swap.freeKB / data.swap.totalKB) * 100).toFixed(1)
+    : '0.0';
+  const uptimeHours = (data.hostUptimeSeconds / 3600).toFixed(1);
+
+  document.getElementById('hostStatsCards').innerHTML = `
+    <div class="card"><h3>CPU Steal</h3><div class="value">${data.cpuStealPercent}%</div></div>
+    <div class="card"><h3>Load Average</h3><div class="value">${data.loadAverage}</div></div>
+    <div class="card"><h3>Host RAM Used</h3><div class="value">${memUsedPct}%</div></div>
+    <div class="card"><h3>Swap Used</h3><div class="value">${swapUsedPct}%</div></div>
+    <div class="card"><h3>Disk</h3><div class="value" style="font-size: 0.7em;">${data.disk}</div></div>
+    <div class="card"><h3>Host Uptime</h3><div class="value">${uptimeHours}h</div></div>
+  `;
+}
+
+pollHostStats();
+setInterval(pollHostStats, 10000);
 
     async function pollHealth() {
       const res = await fetch('/health');

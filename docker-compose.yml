@@ -9,3 +9,4 @@ services:
     volumes:
       - /home/opc/docker-stats.log:/app/docker-stats.log:ro
       - /home/opc/gol-data:/app/data
+      - /home/opc/host-stats.json:/app/host-stats.json:ro

@@ -231,6 +231,26 @@ output {
   margin-top: 8px;
 }
 
+.shareControls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+  color: #aaa;
+}
+
+.shareControls input {
+  min-width: min(520px, 100%);
+  flex: 1 1 280px;
+  font-family: monospace;
+}
+
+.shareControls output {
+  color: #00ff66;
+  font-size: 11px;
+}
+
 @media (max-width: 760px) {
   .toolbar,
   .constructorHeader,

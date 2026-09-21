@@ -66,6 +66,13 @@
         </div>
       </div>
       <div id="matrix" class="matrix" aria-label="Attraction matrix"></div>
+      <div class="shareControls">
+        <label for="presetShare">Share preset</label>
+        <input id="presetShare" type="text" spellcheck="false" placeholder="Copy or paste a one-line preset">
+        <button id="copyPresetBtn" type="button">Copy preset</button>
+        <button id="loadPresetBtn" type="button">Load preset</button>
+        <output id="presetShareStatus" aria-live="polite"></output>
+      </div>
       <p class="matrixHint">Rows act on columns. Values range from -1.00 (repel) to +1.00 (attract).</p>
     </section>
   </main>

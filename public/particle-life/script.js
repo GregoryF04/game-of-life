@@ -11,6 +11,8 @@ const fpsValue = document.getElementById('fpsValue');
 const fpsWarning = document.getElementById('fpsWarning');
 const compatibilityNote = document.getElementById('compatibilityNote');
 const totalParticleValue = document.getElementById('totalParticleValue');
+const presetShareInput = document.getElementById('presetShare');
+const presetShareStatus = document.getElementById('presetShareStatus');
 const pauseButton = document.getElementById('pauseBtn');
 const colors = ['#ff4d6d', '#35d0ba', '#ffd166', '#5aa9ff', '#c77dff', '#f9844a'];
 const colorValues = colors.map((color) => {
@@ -587,6 +589,43 @@ function updateLabels() {
   frictionValue.textContent = friction.toFixed(2);
 }
 
+function serializePreset() {
+  return JSON.stringify({
+    version: 1,
+    species: speciesCount,
+    particles: particlesPerSpecies,
+    radius: interactionRadius,
+    friction,
+    matrix,
+  });
+}
+
+function applySharedPreset(serialized) {
+  const preset = JSON.parse(serialized);
+  if (!preset || preset.version !== 1 || ![4, 5, 6].includes(preset.species) ||
+      !Number.isInteger(preset.particles) || preset.particles < 50 || preset.particles > 5000 ||
+      !Number.isFinite(preset.radius) || preset.radius < 45 || preset.radius > 160 ||
+      !Number.isFinite(preset.friction) || preset.friction < 0.82 || preset.friction > 0.98 ||
+      !Array.isArray(preset.matrix) || preset.matrix.length !== preset.species ||
+      preset.matrix.some((row) => !Array.isArray(row) || row.length !== preset.species ||
+        row.some((value) => !Number.isFinite(value) || value < -1 || value > 1))) {
+    throw new Error('Invalid preset');
+  }
+
+  speciesCount = preset.species;
+  particlesPerSpecies = preset.particles;
+  interactionRadius = preset.radius;
+  friction = preset.friction;
+  matrix = preset.matrix.map((row) => row.map((value) => Number(value)));
+  speciesSelect.value = String(speciesCount);
+  particleCountInput.value = String(particlesPerSpecies);
+  radiusInput.value = String(interactionRadius);
+  frictionInput.value = String(friction);
+  renderMatrix();
+  updateLabels();
+  restart();
+}
+
 speciesSelect.addEventListener('change', () => {
   speciesCount = Number(speciesSelect.value);
   matrix = presets[document.getElementById('preset').value](speciesCount);
@@ -620,6 +659,37 @@ document.getElementById('randomizeBtn').addEventListener('click', () => {
   matrix = presets.chaos(speciesCount);
   renderMatrix();
   restart();
+});
+
+document.getElementById('copyPresetBtn').addEventListener('click', async () => {
+  const serialized = serializePreset();
+  presetShareInput.value = serialized;
+  try {
+    await navigator.clipboard.writeText(serialized);
+    presetShareStatus.textContent = 'Copied';
+  } catch {
+    presetShareInput.select();
+    presetShareStatus.textContent = 'Select and copy the line';
+  }
+});
+
+document.getElementById('loadPresetBtn').addEventListener('click', async () => {
+  let serialized = presetShareInput.value.trim();
+  if (!serialized) {
+    try {
+      serialized = await navigator.clipboard.readText();
+      presetShareInput.value = serialized;
+    } catch {
+      presetShareStatus.textContent = 'Paste a preset line first';
+      return;
+    }
+  }
+  try {
+    applySharedPreset(serialized);
+    presetShareStatus.textContent = 'Loaded';
+  } catch {
+    presetShareStatus.textContent = 'Invalid preset';
+  }
 });
 
 document.getElementById('restartBtn').addEventListener('click', restart);

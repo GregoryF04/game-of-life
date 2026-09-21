@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Particle Life</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="page">
+    <header class="topbar">
+      <a class="backLink" href="/">Mini Games</a>
+      <div class="headingRow">
+        <div>
+          <h1>Particle Life</h1>
+          <p>Design the rules, then watch the species organize themselves.</p>
+        </div>
+        <div class="performanceReadout">
+          <output id="fpsValue" class="fpsReadout">0 FPS</output>
+          <span id="fpsWarning" class="fpsWarning" hidden>Lower particle count for smoother simulation.</span>
+          <span id="compatibilityNote" class="compatibilityNote" hidden>Running in compatibility mode - GPU acceleration unavailable in this browser</span>
+        </div>
+      </div>
+      <div class="toolbar">
+        <label class="field">Species
+          <select id="speciesCount" aria-label="Species count">
+            <option value="4">4</option>
+            <option value="5">5</option>
+            <option value="6">6</option>
+          </select>
+        </label>
+        <label class="field sliderField">Particles / species <output id="particleValue">150</output>
+          <input id="particleCount" type="range" min="50" max="5000" value="150">
+          <output class="totalParticles">Total: <span id="totalParticleValue">600</span></output>
+        </label>
+        <label class="field sliderField">Interaction radius <output id="radiusValue">90</output>
+          <input id="radius" type="range" min="45" max="160" value="90">
+        </label>
+        <label class="field sliderField">Friction <output id="frictionValue">0.91</output>
+          <input id="friction" type="range" min="0.82" max="0.98" value="0.91" step="0.01">
+        </label>
+        <button id="restartBtn" type="button">Restart</button>
+        <button id="pauseBtn" type="button">Pause</button>
+      </div>
+    </header>
+
+    <section class="canvasShell" aria-label="Particle Life simulation">
+      <canvas id="simulation" aria-label="Animated Particle Life simulation"></canvas>
+    </section>
+
+    <section class="constructor" aria-labelledby="constructorTitle">
+      <div class="constructorHeader">
+        <div>
+          <h2 id="constructorTitle">Rule constructor</h2>
+          <p>Positive values attract. Negative values repel. Edit a cell directly.</p>
+        </div>
+        <div class="presetControls">
+          <label for="preset">Preset</label>
+          <select id="preset">
+            <option value="clusters">Clusters</option>
+            <option value="chains">Chains</option>
+            <option value="cells">Cells</option>
+            <option value="chaos">Chaos</option>
+          </select>
+          <button id="randomizeBtn" type="button">Randomize matrix</button>
+        </div>
+      </div>
+      <div id="matrix" class="matrix" aria-label="Attraction matrix"></div>
+      <p class="matrixHint">Rows act on columns. Values range from -1.00 (repel) to +1.00 (attract).</p>
+    </section>
+  </main>
+  <script src="script.js"></script>
+</body>
+</html>

@@ -37,7 +37,10 @@ let width = 1;
 let height = 1;
 let pixelRatio = 1;
 let speciesCount = Number(speciesSelect.value);
-let particlesPerSpecies = Number(particleCountInput.value);
+const isSmallScreen = window.matchMedia('(max-width: 760px)').matches;
+let particlesPerSpecies = isSmallScreen
+  ? Math.min(80, Number(particleCountInput.value))
+  : Number(particleCountInput.value);
 let interactionRadius = Number(radiusInput.value);
 let friction = Number(frictionInput.value);
 let matrix = presets.clusters(speciesCount);
@@ -62,6 +65,19 @@ let paused = false;
 let lastFrame = performance.now();
 let fpsTimestamp = lastFrame;
 let frameCount = 0;
+
+function initialParticlePosition(species, particle) {
+  const angle = (species / speciesCount) * Math.PI * 2;
+  const centerX = width * (0.5 + Math.cos(angle) * 0.28);
+  const centerY = height * (0.5 + Math.sin(angle) * 0.28);
+  const spread = Math.min(width, height) * 0.11;
+  const particleAngle = particle * 2.399963;
+  const distance = spread * Math.sqrt((particle % 17) / 17);
+  return [
+    (centerX + Math.cos(particleAngle) * distance + width) % width,
+    (centerY + Math.sin(particleAngle) * distance + height) % height,
+  ];
+}
 
 function resizeCanvas() {
   const bounds = canvas.getBoundingClientRect();
@@ -88,10 +104,11 @@ function createCpuParticles() {
   let index = 0;
   for (let species = 0; species < speciesCount; species += 1) {
     for (let particle = 0; particle < particlesPerSpecies; particle += 1) {
-      particleX[index] = Math.random() * width;
-      particleY[index] = Math.random() * height;
-      particleVX[index] = (Math.random() - 0.5) * 0.7;
-      particleVY[index] = (Math.random() - 0.5) * 0.7;
+      const [x, y] = initialParticlePosition(species, particle);
+      particleX[index] = x;
+      particleY[index] = y;
+      particleVX[index] = 0;
+      particleVY[index] = 0;
       particleSpecies[index] = species;
       index += 1;
     }
@@ -410,10 +427,11 @@ function createGpuParticles() {
   for (let species = 0; species < speciesCount; species += 1) {
     for (let particle = 0; particle < particlesPerSpecies; particle += 1) {
       const offset = index * 5;
-      state[offset] = Math.random() * width;
-      state[offset + 1] = Math.random() * height;
-      state[offset + 2] = (Math.random() - 0.5) * 0.7;
-      state[offset + 3] = (Math.random() - 0.5) * 0.7;
+      const [x, y] = initialParticlePosition(species, particle);
+      state[offset] = x;
+      state[offset + 1] = y;
+      state[offset + 2] = 0;
+      state[offset + 3] = 0;
       state[offset + 4] = species;
       index += 1;
     }
@@ -698,7 +716,12 @@ pauseButton.addEventListener('click', () => {
   pauseButton.textContent = paused ? 'Resume' : 'Pause';
 });
 
-new ResizeObserver(resizeCanvas).observe(canvas.parentElement);
+if ('ResizeObserver' in window) {
+  new ResizeObserver(resizeCanvas).observe(canvas.parentElement);
+} else {
+  window.addEventListener('resize', resizeCanvas);
+}
+if (isSmallScreen) particleCountInput.value = String(particlesPerSpecies);
 renderMatrix();
 updateLabels();
 initializeEngine();

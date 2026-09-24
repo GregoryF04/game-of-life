@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Snake</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="gameShell">
+    <header class="topbar">
+      <a class="backLink" href="/">Return to main</a>
+      <div class="titleBlock">
+        <p class="eyebrow">Classic arcade</p>
+        <h1>Snake</h1>
+      </div>
+      <div class="scorePanel" aria-live="polite">
+        <span class="scoreLabel">Score</span>
+        <strong id="score">0</strong>
+      </div>
+    </header>
+
+    <section class="gameArea" aria-label="Snake game">
+      <div class="boardFrame">
+        <canvas id="board" width="400" height="400" aria-label="Snake game board"></canvas>
+        <div id="message" class="message">
+          <span class="messageIcon">+</span>
+          <h2>Ready?</h2>
+          <p>Use the arrow keys or WASD to move.</p>
+          <button id="startButton" type="button">Start game</button>
+        </div>
+      </div>
+
+      <div class="controls">
+        <button id="pauseButton" class="controlButton" type="button">Pause</button>
+        <button id="restartButton" class="controlButton secondary" type="button">Restart</button>
+        <button id="aiButton" class="controlButton secondary" type="button" aria-pressed="false">AI play</button>
+      </div>
+
+      <div class="dPad" aria-label="Touch controls">
+        <span></span><button data-direction="up" aria-label="Move up">&#9650;</button><span></span>
+        <button data-direction="left" aria-label="Move left">&#9664;</button><span class="dPadCenter"></span><button data-direction="right" aria-label="Move right">&#9654;</button>
+        <span></span><button data-direction="down" aria-label="Move down">&#9660;</button><span></span>
+      </div>
+    </section>
+
+    <footer>Eat the glowing fruit. Keep moving. <span>Best score: <strong id="bestScore">0</strong></span></footer>
+  </main>
+  <script src="script.js"></script>
+</body>
+</html>

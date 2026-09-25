@@ -65,6 +65,8 @@ let paused = false;
 let lastFrame = performance.now();
 let fpsTimestamp = lastFrame;
 let frameCount = 0;
+let savedSettings = null;
+try { savedSettings = JSON.parse(localStorage.getItem('particle-life-settings') || 'null'); } catch { savedSettings = null; }
 
 function resizeCanvas() {
   const bounds = canvas.getBoundingClientRect();
@@ -591,6 +593,7 @@ function updateLabels() {
   totalParticleValue.textContent = speciesCount * particlesPerSpecies;
   radiusValue.textContent = interactionRadius;
   frictionValue.textContent = friction.toFixed(2);
+  localStorage.setItem('particle-life-settings', serializePreset());
 }
 
 function serializePreset() {
@@ -708,6 +711,9 @@ if ('ResizeObserver' in window) {
   window.addEventListener('resize', resizeCanvas);
 }
 if (isSmallScreen) particleCountInput.value = String(particlesPerSpecies);
+if (savedSettings && savedSettings.version === 1) {
+  try { applySharedPreset(JSON.stringify(savedSettings)); } catch { /* use defaults */ }
+}
 renderMatrix();
 updateLabels();
 initializeEngine();

@@ -11,6 +11,7 @@ const pauseButton = document.getElementById('pauseButton');
 const restartButton = document.getElementById('restartButton');
 const aiButton = document.getElementById('aiButton');
 const hamiltonianButton = document.getElementById('hamiltonianButton');
+const aiPreviewToggle = document.getElementById('aiPreviewToggle');
 
 const gridSize = 20;
 const cellSize = canvas.width / gridSize;
@@ -27,8 +28,10 @@ let hamiltonianEnabled = false;
 let hamiltonianCycle = [];
 let hamiltonianIndex = 0;
 let gameTimer = null;
+let aiPreviewEnabled = localStorage.getItem('snake-ai-preview') === 'true';
 
 bestScoreElement.textContent = bestScore;
+aiPreviewToggle.checked = aiPreviewEnabled;
 
 function resetGame() {
   if (hamiltonianEnabled) {
@@ -335,6 +338,41 @@ function isOpenCell(cell, occupied) {
   return cell.x >= 0 && cell.x < gridSize && cell.y >= 0 && cell.y < gridSize && !occupied.has(`${cell.x},${cell.y}`);
 }
 
+function findAiPath() {
+  if (hamiltonianEnabled && hamiltonianCycle.length) {
+    return Array.from({ length: Math.min(80, hamiltonianCycle.length - 1) }, (_, offset) =>
+      hamiltonianCycle[(hamiltonianIndex + offset + 1) % hamiltonianCycle.length],
+    );
+  }
+  if (!food) return [];
+  const start = snake[0];
+  const blocked = new Set(snake.slice(0, -1).map(cellKey));
+  const queue = [start];
+  const parents = new Map([[cellKey(start), null]]);
+  while (queue.length) {
+    const current = queue.shift();
+    if (current.x === food.x && current.y === food.y) {
+      const path = [];
+      let key = cellKey(current);
+      while (key && key !== cellKey(start)) {
+        const cell = key.split(',').map(Number);
+        path.unshift({ x: cell[0], y: cell[1] });
+        key = parents.get(key);
+      }
+      return path;
+    }
+    getDirections().forEach(candidate => {
+      const next = { x: current.x + candidate.x, y: current.y + candidate.y };
+      const key = cellKey(next);
+      if (isOpenCell(next, blocked) && !parents.has(key)) {
+        parents.set(key, cellKey(current));
+        queue.push(next);
+      }
+    });
+  }
+  return [];
+}
+
 function gameLoop() {
   if (gameState !== 'playing') return;
   update();
@@ -363,6 +401,18 @@ function draw() {
   context.arc(food.x * cellSize + cellSize / 2, food.y * cellSize + cellSize / 2, cellSize * .28, 0, Math.PI * 2);
   context.fill();
   context.shadowBlur = 0;
+
+  if (aiPreviewEnabled && aiEnabled) {
+    const path = findAiPath();
+    context.strokeStyle = 'rgba(112, 225, 195, .72)';
+    context.lineWidth = 2;
+    context.setLineDash([4, 4]);
+    context.beginPath();
+    context.moveTo(snake[0].x * cellSize + cellSize / 2, snake[0].y * cellSize + cellSize / 2);
+    path.forEach(cell => context.lineTo(cell.x * cellSize + cellSize / 2, cell.y * cellSize + cellSize / 2));
+    context.stroke();
+    context.setLineDash([]);
+  }
 
   snake.forEach((segment, index) => {
     context.fillStyle = index === 0 ? '#ecff91' : '#b7d34e';
@@ -448,6 +498,11 @@ pauseButton.addEventListener('click', togglePause);
 restartButton.addEventListener('click', restart);
 aiButton.addEventListener('click', toggleAi);
 hamiltonianButton.addEventListener('click', toggleHamiltonian);
+aiPreviewToggle.addEventListener('change', () => {
+  aiPreviewEnabled = aiPreviewToggle.checked;
+  localStorage.setItem('snake-ai-preview', String(aiPreviewEnabled));
+  draw();
+});
 document.querySelectorAll('[data-direction]').forEach(button => {
   button.addEventListener('click', () => setDirection(directions[button.dataset.direction === 'up' ? 'ArrowUp' : button.dataset.direction === 'down' ? 'ArrowDown' : button.dataset.direction === 'left' ? 'ArrowLeft' : 'ArrowRight']));
 });

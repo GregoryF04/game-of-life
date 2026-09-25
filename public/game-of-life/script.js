@@ -18,6 +18,8 @@ const rowsInput = document.getElementById('rowsInput');
 const colsInput = document.getElementById('colsInput');
 const sizeBtn = document.getElementById('sizeBtn');
 const highLifeToggle = document.getElementById('highLifeToggle');
+const savedSpeed = Number(localStorage.getItem('gol-speed'));
+if (Number.isInteger(savedSpeed) && savedSpeed >= 1 && savedSpeed <= 30) speedRange.value = savedSpeed;
 
 let grid = [];
 let ages = [];
@@ -418,6 +420,7 @@ pastePatternBtn.addEventListener('click', async () => {
 speedRange.addEventListener('input', async () => {
   const fps = Number(speedRange.value);
   speedValue.textContent = `${fps} FPS`;
+  localStorage.setItem('gol-speed', String(fps));
 
   await fetch('/api/speed', {
     method: 'POST',

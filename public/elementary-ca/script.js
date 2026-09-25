@@ -17,6 +17,8 @@ let rows = [];
 let visibleRows = 0;
 let animationFrame = null;
 let lastAnimationTime = 0;
+let savedSettings = {};
+try { savedSettings = JSON.parse(localStorage.getItem('elementary-ca-settings') || '{}'); } catch { savedSettings = {}; }
 
 function bitForPattern(patternIndex) {
   return (rule >> (7 - patternIndex)) & 1;
@@ -36,6 +38,7 @@ function setRule(value, regenerate = true) {
   ruleNumber.value = rule;
   updateRuleBits();
   presetSelect.value = [30, 90, 110, 184, 54].includes(rule) ? String(rule) : '';
+  localStorage.setItem('elementary-ca-settings', JSON.stringify({ rule, randomInitial: randomInitial.checked }));
   if (regenerate) generate();
 }
 
@@ -139,7 +142,10 @@ presetSelect.addEventListener('change', () => {
   if (presetSelect.value) setRule(presetSelect.value);
 });
 
-randomInitial.addEventListener('change', generate);
+randomInitial.addEventListener('change', () => {
+  localStorage.setItem('elementary-ca-settings', JSON.stringify({ rule, randomInitial: randomInitial.checked }));
+  generate();
+});
 generateButton.addEventListener('click', generate);
 animateButton.addEventListener('click', () => {
   if (animationFrame === null) startAnimation();
@@ -148,6 +154,7 @@ animateButton.addEventListener('click', () => {
 window.addEventListener('resize', resizeCanvas);
 
 createRuleBits();
-setRule(DEFAULT_RULE, false);
+randomInitial.checked = Boolean(savedSettings.randomInitial);
+setRule(Number.isInteger(savedSettings.rule) ? savedSettings.rule : DEFAULT_RULE, false);
 resizeCanvas();
 generate();

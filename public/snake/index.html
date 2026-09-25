@@ -40,6 +40,8 @@
         <button id="restartButton" class="controlButton secondary" type="button">Restart</button>
         <button id="aiButton" class="controlButton secondary" type="button" aria-pressed="false">AI play</button>
         <button id="hamiltonianButton" class="controlButton secondary" type="button" aria-pressed="false">Hamiltonian cycle</button>
+        <button class="controlButton secondary" data-fullscreen-target=".boardFrame" type="button" aria-pressed="false">Fullscreen</button>
+        <label class="previewToggle"><input id="aiPreviewToggle" type="checkbox"> Show AI path</label>
       </div>
 
       <div class="dPad" aria-label="Touch controls">
@@ -51,6 +53,7 @@
 
     <footer>Eat the glowing fruit. Keep moving. <span>Best score: <strong id="bestScore">0</strong></span></footer>
   </main>
+  <script src="../fullscreen.js"></script>
   <script src="script.js"></script>
 </body>
 </html>

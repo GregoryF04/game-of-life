@@ -138,6 +138,7 @@ h1 { font-size: 18px; line-height: normal; letter-spacing: normal; }
 .dPad button:active { background: #333; }
 .controlButton { min-width: 94px; padding: 8px 14px; }
 .controlButton.secondary { border-color: #444; background: #222; color: #eee; }
+.previewToggle { display: inline-flex; align-items: center; gap: 5px; color: #aaa; font-size: 12px; white-space: nowrap; }
 
 .siteNav { width: 100%; margin: 0 0 14px; }
 .topbar { grid-template-columns: 1fr auto; }

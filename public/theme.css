@@ -118,3 +118,14 @@ select:focus-visible {
 
   .siteNavLinks a { flex: 0 0 auto; }
 }
+
+:fullscreen {
+  background: var(--site-bg);
+}
+
+.boardFrame:fullscreen,
+.canvasShell:fullscreen,
+.boardViewport:fullscreen {
+  width: 100vw;
+  height: 100vh;
+}

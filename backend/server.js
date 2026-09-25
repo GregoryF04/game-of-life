@@ -15,7 +15,7 @@ const STATE_FILE = '/app/data/state.json';
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
 const SHITPOSTS_FILE = path.join(DATA_DIR, 'shitposts.json');
 const SAVE_DEBOUNCE_MS = 3000;
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '1235';
 
 let grid = makeEmptyGrid();
 let ages = makeAgeGrid();

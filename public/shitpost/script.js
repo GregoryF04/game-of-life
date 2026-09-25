@@ -6,6 +6,22 @@ const feed = document.getElementById('feed');
 const feedStatus = document.getElementById('feedStatus');
 const refreshBtn = document.getElementById('refreshBtn');
 
+const EDIT_TOKENS_KEY = 'shitpost_edit_tokens';
+
+function getEditTokens() {
+  try {
+    return JSON.parse(localStorage.getItem(EDIT_TOKENS_KEY)) || {};
+  } catch {
+    return {};
+  }
+}
+
+function saveEditToken(postId, token) {
+  const tokens = getEditTokens();
+  tokens[postId] = token;
+  localStorage.setItem(EDIT_TOKENS_KEY, JSON.stringify(tokens));
+}
+
 function updateCharacterCount() {
   characterCount.textContent = `${contentInput.value.length} / 280`;
 }
@@ -20,9 +36,12 @@ function renderPosts(posts) {
     return;
   }
 
+  const editTokens = getEditTokens();
+
   posts.slice().reverse().forEach(post => {
     const article = document.createElement('article');
     article.className = 'post';
+
     const meta = document.createElement('div');
     meta.className = 'postMeta';
     const author = document.createElement('span');
@@ -30,13 +49,73 @@ function renderPosts(posts) {
     author.textContent = `@${post.author}`;
     const date = document.createElement('time');
     date.dateTime = post.createdAt;
-    date.textContent = new Date(post.createdAt).toLocaleString();
+    date.textContent = post.editedAt
+      ? `${new Date(post.editedAt).toLocaleString()} (edited)`
+      : new Date(post.createdAt).toLocaleString();
     meta.append(author, date);
+
     const content = document.createElement('div');
     content.className = 'postContent';
     content.textContent = post.content;
+
     article.append(meta, content);
+
+    if (editTokens[post.id]) {
+      const editBtn = document.createElement('button');
+      editBtn.type = 'button';
+      editBtn.className = 'editBtn';
+      editBtn.textContent = 'Edit';
+      editBtn.addEventListener('click', () => startEdit(article, post, editTokens[post.id]));
+      article.appendChild(editBtn);
+    }
+
     feed.appendChild(article);
+  });
+}
+
+function startEdit(article, post, token) {
+  const content = article.querySelector('.postContent');
+  const editBtn = article.querySelector('.editBtn');
+
+  const textarea = document.createElement('textarea');
+  textarea.className = 'editArea';
+  textarea.maxLength = 280;
+  textarea.value = post.content;
+
+  const saveBtn = document.createElement('button');
+  saveBtn.type = 'button';
+  saveBtn.textContent = 'Save';
+
+  const cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.textContent = 'Cancel';
+
+  content.replaceWith(textarea);
+  editBtn.replaceWith(saveBtn);
+  saveBtn.after(cancelBtn);
+  textarea.focus();
+
+  cancelBtn.addEventListener('click', () => loadPosts());
+
+  saveBtn.addEventListener('click', async () => {
+    const newContent = textarea.value.trim();
+    if (!newContent) return;
+
+    saveBtn.disabled = true;
+    cancelBtn.disabled = true;
+    try {
+      const response = await fetch(`/api/shitposts/${post.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: newContent, editToken: token }),
+      });
+      if (!response.ok) throw new Error('Could not save');
+      await loadPosts();
+    } catch {
+      feedStatus.textContent = 'Could not save edit';
+      saveBtn.disabled = false;
+      cancelBtn.disabled = false;
+    }
   });
 }
 
@@ -63,6 +142,10 @@ form.addEventListener('submit', async event => {
       body: JSON.stringify({ author: authorInput.value, content: contentInput.value }),
     });
     if (!response.ok) throw new Error('Could not post');
+    const data = await response.json();
+    if (data.post && data.editToken) {
+      saveEditToken(data.post.id, data.editToken);
+    }
     contentInput.value = '';
     updateCharacterCount();
     await loadPosts();

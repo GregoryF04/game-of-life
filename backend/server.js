@@ -1,6 +1,7 @@
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 
 const app = express();
 app.use(express.json());
@@ -243,7 +244,8 @@ api.post('/rule', (req, res) => {
 });
 
 api.get('/shitposts', (req, res) => {
-  res.json({ posts: shitposts });
+  const publicPosts = shitposts.map(({ editToken, ...rest }) => rest);
+  res.json({ posts: publicPosts });
 });
 
 api.post('/shitposts', (req, res) => {
@@ -251,16 +253,41 @@ api.post('/shitposts', (req, res) => {
   const content = String(req.body.content || '').trim().slice(0, 280);
   if (!content) return res.status(400).json({ ok: false, error: 'Post cannot be empty' });
 
+  const editToken = crypto.randomBytes(16).toString('hex');
   const post = {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     author,
     content,
     createdAt: new Date().toISOString(),
+    editToken,
   };
   shitposts.push(post);
   shitposts = shitposts.slice(-500);
   saveShitposts();
-  res.status(201).json({ ok: true, post });
+
+  const { editToken: _, ...publicPost } = post;
+  res.status(201).json({ ok: true, post: publicPost, editToken });
+});
+
+api.put('/shitposts/:id', (req, res) => {
+  const { id } = req.params;
+  const editToken = String(req.body.editToken || '');
+  const content = String(req.body.content || '').trim().slice(0, 280);
+
+  if (!content) return res.status(400).json({ ok: false, error: 'Post cannot be empty' });
+
+  const post = shitposts.find(p => p.id === id);
+  if (!post) return res.status(404).json({ ok: false, error: 'Post not found' });
+  if (!post.editToken || post.editToken !== editToken) {
+    return res.status(403).json({ ok: false, error: 'Not allowed to edit this post' });
+  }
+
+  post.content = content;
+  post.editedAt = new Date().toISOString();
+  saveShitposts();
+
+  const { editToken: _, ...publicPost } = post;
+  res.json({ ok: true, post: publicPost });
 });
 
 app.use('/api', api);

@@ -10,6 +10,7 @@ const startButton = document.getElementById('startButton');
 const pauseButton = document.getElementById('pauseButton');
 const restartButton = document.getElementById('restartButton');
 const aiButton = document.getElementById('aiButton');
+const hamiltonianButton = document.getElementById('hamiltonianButton');
 
 const gridSize = 20;
 const cellSize = canvas.width / gridSize;
@@ -22,12 +23,19 @@ let score = 0;
 let bestScore = Number(localStorage.getItem('snake-best-score')) || 0;
 let gameState = 'ready';
 let aiEnabled = false;
+let hamiltonianEnabled = false;
+let hamiltonianCycle = [];
+let hamiltonianIndex = 0;
 let lastTick = 0;
 let animationFrame;
 
 bestScoreElement.textContent = bestScore;
 
 function resetGame() {
+  if (hamiltonianEnabled) {
+    resetHamiltonianGame();
+    return;
+  }
   snake = [{ x: 10, y: 10 }, { x: 9, y: 10 }, { x: 8, y: 10 }];
   direction = { x: 1, y: 0 };
   nextDirection = direction;
@@ -35,6 +43,46 @@ function resetGame() {
   scoreElement.textContent = score;
   food = createFood();
   draw();
+}
+
+function resetHamiltonianGame() {
+  hamiltonianCycle = createHamiltonianCycle();
+  hamiltonianIndex = Math.floor(Math.random() * hamiltonianCycle.length);
+  snake = [0, 1, 2].map(offset =>
+    hamiltonianCycle[(hamiltonianIndex - offset + hamiltonianCycle.length) % hamiltonianCycle.length],
+  );
+  const nextCell = hamiltonianCycle[(hamiltonianIndex + 1) % hamiltonianCycle.length];
+  direction = { x: nextCell.x - snake[0].x, y: nextCell.y - snake[0].y };
+  nextDirection = direction;
+  score = 0;
+  scoreElement.textContent = score;
+  food = createFood();
+  draw();
+}
+
+function createHamiltonianCycle() {
+  const baseCycle = [];
+  for (let x = 0; x < gridSize; x++) baseCycle.push({ x, y: 0 });
+  for (let y = 1; y < gridSize; y++) {
+    if (y % 2 === 1) {
+      for (let x = gridSize - 1; x >= 1; x--) baseCycle.push({ x, y });
+    } else {
+      for (let x = 1; x < gridSize; x++) baseCycle.push({ x, y });
+    }
+  }
+  for (let y = gridSize - 1; y >= 1; y--) baseCycle.push({ x: 0, y });
+
+  const transform = Math.floor(Math.random() * 8);
+  const transformed = baseCycle.map(cell => {
+    let x = cell.x;
+    let y = cell.y;
+    if (transform & 1) x = gridSize - 1 - x;
+    if (transform & 2) y = gridSize - 1 - y;
+    if (transform & 4) [x, y] = [y, x];
+    return { x, y };
+  });
+  const offset = Math.floor(Math.random() * transformed.length);
+  return transformed.slice(offset).concat(transformed.slice(0, offset));
 }
 
 function createFood() {
@@ -51,6 +99,9 @@ function setDirection(newDirection) {
   if (gameState === 'ready' || gameState === 'over') startGame();
   if (newDirection.x + direction.x === 0 && newDirection.y + direction.y === 0) return;
   nextDirection = newDirection;
+  hamiltonianEnabled = false;
+  hamiltonianButton.textContent = 'Hamiltonian cycle';
+  hamiltonianButton.setAttribute('aria-pressed', 'false');
 }
 
 function startGame() {
@@ -110,6 +161,7 @@ function update() {
   }
 
   snake.unshift(head);
+  if (hamiltonianEnabled) hamiltonianIndex = (hamiltonianIndex + 1) % hamiltonianCycle.length;
   if (eatsFood) {
     score += 1;
     scoreElement.textContent = score;
@@ -120,6 +172,10 @@ function update() {
 }
 
 function chooseAiDirection() {
+  if (hamiltonianEnabled) {
+    const nextCell = hamiltonianCycle[(hamiltonianIndex + 1) % hamiltonianCycle.length];
+    return { x: nextCell.x - snake[0].x, y: nextCell.y - snake[0].y };
+  }
   const possibleDirections = getDirections().filter(candidate =>
     !(candidate.x + direction.x === 0 && candidate.y + direction.y === 0),
   );
@@ -273,10 +329,24 @@ function restart() {
 }
 
 function toggleAi() {
-  aiEnabled = !aiEnabled;
+  const wasHamiltonianEnabled = hamiltonianEnabled;
+  hamiltonianEnabled = false;
+  hamiltonianButton.textContent = 'Hamiltonian cycle';
+  hamiltonianButton.setAttribute('aria-pressed', 'false');
+  aiEnabled = wasHamiltonianEnabled ? true : !aiEnabled;
   aiButton.textContent = aiEnabled ? 'AI: On' : 'AI play';
   aiButton.setAttribute('aria-pressed', String(aiEnabled));
   if (aiEnabled && (gameState === 'ready' || gameState === 'over')) startGame();
+}
+
+function toggleHamiltonian() {
+  hamiltonianEnabled = !hamiltonianEnabled;
+  aiEnabled = hamiltonianEnabled;
+  hamiltonianButton.textContent = hamiltonianEnabled ? 'Hamiltonian: On' : 'Hamiltonian cycle';
+  hamiltonianButton.setAttribute('aria-pressed', String(hamiltonianEnabled));
+  aiButton.textContent = 'AI play';
+  aiButton.setAttribute('aria-pressed', 'false');
+  restart();
 }
 
 const directions = {
@@ -307,6 +377,7 @@ startButton.addEventListener('click', startGame);
 pauseButton.addEventListener('click', togglePause);
 restartButton.addEventListener('click', restart);
 aiButton.addEventListener('click', toggleAi);
+hamiltonianButton.addEventListener('click', toggleHamiltonian);
 document.querySelectorAll('[data-direction]').forEach(button => {
   button.addEventListener('click', () => setDirection(directions[button.dataset.direction === 'up' ? 'ArrowUp' : button.dataset.direction === 'down' ? 'ArrowDown' : button.dataset.direction === 'left' ? 'ArrowLeft' : 'ArrowRight']));
 });

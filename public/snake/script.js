@@ -71,17 +71,68 @@ function createHamiltonianCycle() {
   }
   for (let y = gridSize - 1; y >= 1; y--) baseCycle.push({ x: 0, y });
 
-  const transform = Math.floor(Math.random() * 8);
-  const transformed = baseCycle.map(cell => {
-    let x = cell.x;
-    let y = cell.y;
-    if (transform & 1) x = gridSize - 1 - x;
-    if (transform & 2) y = gridSize - 1 - y;
-    if (transform & 4) [x, y] = [y, x];
-    return { x, y };
-  });
-  const offset = Math.floor(Math.random() * transformed.length);
-  return transformed.slice(offset).concat(transformed.slice(0, offset));
+  let path = [...baseCycle];
+  const minimumMutations = gridSize * gridSize * 4;
+  const maximumMutations = gridSize * gridSize * 40;
+  let closed = false;
+
+  for (let attempt = 0; attempt < maximumMutations; attempt++) {
+    if (Math.random() < 0.5) path.reverse();
+    const endpoint = path[path.length - 1];
+    const candidates = getDirections()
+      .map(direction => ({ x: endpoint.x + direction.x, y: endpoint.y + direction.y }))
+      .filter(cell => isOpenCell(cell, new Set()) && cellKey(cell) !== cellKey(path[path.length - 2]));
+    if (!candidates.length) continue;
+
+    const neighbor = candidates[Math.floor(Math.random() * candidates.length)];
+    const neighborIndex = path.findIndex(cell => cellKey(cell) === cellKey(neighbor));
+    if (neighborIndex === 0) {
+      if (attempt >= minimumMutations) {
+        closed = true;
+        break;
+      }
+      continue;
+    }
+    if (neighborIndex < 0) continue;
+
+    path = path.slice(0, neighborIndex + 1).concat(path.slice(neighborIndex + 1).reverse());
+  }
+
+  if (!closed) path = baseCycle;
+  const offset = Math.floor(Math.random() * path.length);
+  return path.slice(offset).concat(path.slice(0, offset));
+}
+
+function configureHamiltonianForCurrentSnake() {
+  const head = snake[0];
+  const occupiedBody = new Set(snake.slice(1).map(cellKey));
+  let fallback = null;
+
+  for (let attempt = 0; attempt < 80; attempt++) {
+    const generatedCycle = createHamiltonianCycle();
+    for (const candidateCycle of [generatedCycle, [...generatedCycle].reverse()]) {
+      const headIndex = candidateCycle.findIndex(cell => cell.x === head.x && cell.y === head.y);
+      if (headIndex < 0) continue;
+      const nextCell = candidateCycle[(headIndex + 1) % candidateCycle.length];
+      const nextDirection = { x: nextCell.x - head.x, y: nextCell.y - head.y };
+      const continuesDirection = nextDirection.x === direction.x && nextDirection.y === direction.y;
+      const bodyAhead = candidateCycle.some((cell, index) => {
+        if (index === headIndex) return false;
+        const distance = (index - headIndex + candidateCycle.length) % candidateCycle.length;
+        return distance < snake.length && occupiedBody.has(cellKey(cell));
+      });
+      if (bodyAhead || occupiedBody.has(cellKey(nextCell))) continue;
+      const configured = { cycle: candidateCycle, index: headIndex, continuesDirection };
+      if (continuesDirection) return configured;
+      fallback = fallback || configured;
+    }
+  }
+
+  return fallback;
+}
+
+function cellKey(cell) {
+  return `${cell.x},${cell.y}`;
 }
 
 function createFood() {
@@ -349,6 +400,22 @@ function toggleHamiltonian() {
   hamiltonianButton.setAttribute('aria-pressed', String(hamiltonianEnabled));
   aiButton.textContent = 'AI play';
   aiButton.setAttribute('aria-pressed', 'false');
+  if (!hamiltonianEnabled) {
+    stopGameTimer();
+    if (gameState === 'playing') startGame();
+    return;
+  }
+
+  if (gameState === 'playing' || gameState === 'paused') {
+    const configured = configureHamiltonianForCurrentSnake();
+    if (configured) {
+      hamiltonianCycle = configured.cycle;
+      hamiltonianIndex = configured.index;
+    }
+    if (gameState === 'playing') startGame();
+    return;
+  }
+
   restart();
 }
 

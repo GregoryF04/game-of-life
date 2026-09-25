@@ -26,8 +26,7 @@ let aiEnabled = false;
 let hamiltonianEnabled = false;
 let hamiltonianCycle = [];
 let hamiltonianIndex = 0;
-let lastTick = 0;
-let animationFrame;
+let gameTimer = null;
 
 bestScoreElement.textContent = bestScore;
 
@@ -109,9 +108,15 @@ function startGame() {
   gameState = 'playing';
   message.classList.add('hidden');
   pauseButton.textContent = 'Pause';
-  lastTick = performance.now();
-  cancelAnimationFrame(animationFrame);
-  animationFrame = requestAnimationFrame(gameLoop);
+  stopGameTimer();
+  gameTimer = setInterval(gameLoop, tickDuration);
+}
+
+function stopGameTimer() {
+  if (gameTimer) {
+    clearInterval(gameTimer);
+    gameTimer = null;
+  }
 }
 
 function togglePause() {
@@ -124,6 +129,7 @@ function togglePause() {
     return;
   }
   gameState = 'paused';
+  stopGameTimer();
   pauseButton.textContent = 'Resume';
   showMessage('Paused', 'Take a breath, then keep going.', 'Resume');
 }
@@ -138,6 +144,7 @@ function showMessage(title, text, buttonText) {
 
 function endGame() {
   gameState = 'over';
+  stopGameTimer();
   if (score > bestScore) {
     bestScore = score;
     bestScoreElement.textContent = bestScore;
@@ -277,14 +284,10 @@ function isOpenCell(cell, occupied) {
   return cell.x >= 0 && cell.x < gridSize && cell.y >= 0 && cell.y < gridSize && !occupied.has(`${cell.x},${cell.y}`);
 }
 
-function gameLoop(timestamp) {
+function gameLoop() {
   if (gameState !== 'playing') return;
-  if (timestamp - lastTick >= tickDuration) {
-    update();
-    draw();
-    lastTick = timestamp;
-  }
-  if (gameState === 'playing') animationFrame = requestAnimationFrame(gameLoop);
+  update();
+  draw();
 }
 
 function draw() {
@@ -318,7 +321,7 @@ function draw() {
 }
 
 function restart() {
-  cancelAnimationFrame(animationFrame);
+  stopGameTimer();
   resetGame();
   if (aiEnabled) {
     startGame();

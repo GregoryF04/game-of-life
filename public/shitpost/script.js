@@ -5,8 +5,11 @@ const characterCount = document.getElementById('characterCount');
 const feed = document.getElementById('feed');
 const feedStatus = document.getElementById('feedStatus');
 const refreshBtn = document.getElementById('refreshBtn');
+const adminToggleBtn = document.getElementById('adminToggleBtn');
 
 const EDIT_TOKENS_KEY = 'shitpost_edit_tokens';
+const ADMIN_PASSWORD_KEY = 'shitpost_admin_password';
+let isEditing = false; // приостанавливает автообновление, пока открыта форма правки
 
 function getEditTokens() {
   try {
@@ -20,6 +23,33 @@ function saveEditToken(postId, token) {
   const tokens = getEditTokens();
   tokens[postId] = token;
   localStorage.setItem(EDIT_TOKENS_KEY, JSON.stringify(tokens));
+}
+
+function removeEditToken(postId) {
+  const tokens = getEditTokens();
+  delete tokens[postId];
+  localStorage.setItem(EDIT_TOKENS_KEY, JSON.stringify(tokens));
+}
+
+function getAdminPassword() {
+  return localStorage.getItem(ADMIN_PASSWORD_KEY) || '';
+}
+
+function promptAdminPassword() {
+  const value = prompt('Admin password:');
+  if (value) {
+    localStorage.setItem(ADMIN_PASSWORD_KEY, value);
+  }
+  return getAdminPassword();
+}
+
+function clearAdminPassword() {
+  localStorage.removeItem(ADMIN_PASSWORD_KEY);
+}
+
+function updateAdminButton() {
+  if (!adminToggleBtn) return;
+  adminToggleBtn.textContent = getAdminPassword() ? 'Exit admin' : 'Admin';
 }
 
 function updateCharacterCount() {
@@ -37,6 +67,7 @@ function renderPosts(posts) {
   }
 
   const editTokens = getEditTokens();
+  const isAdmin = Boolean(getAdminPassword());
 
   posts.slice().reverse().forEach(post => {
     const article = document.createElement('article');
@@ -60,13 +91,24 @@ function renderPosts(posts) {
 
     article.append(meta, content);
 
-    if (editTokens[post.id]) {
+    if (editTokens[post.id] || isAdmin) {
+      const actions = document.createElement('div');
+      actions.className = 'postActions';
+
       const editBtn = document.createElement('button');
       editBtn.type = 'button';
       editBtn.className = 'editBtn';
       editBtn.textContent = 'Edit';
       editBtn.addEventListener('click', () => startEdit(article, post, editTokens[post.id]));
-      article.appendChild(editBtn);
+
+      const deleteBtn = document.createElement('button');
+      deleteBtn.type = 'button';
+      deleteBtn.className = 'deleteBtn';
+      deleteBtn.textContent = 'Delete';
+      deleteBtn.addEventListener('click', () => deletePost(post, editTokens[post.id]));
+
+      actions.append(editBtn, deleteBtn);
+      article.appendChild(actions);
     }
 
     feed.appendChild(article);
@@ -74,8 +116,10 @@ function renderPosts(posts) {
 }
 
 function startEdit(article, post, token) {
+  isEditing = true;
+
   const content = article.querySelector('.postContent');
-  const editBtn = article.querySelector('.editBtn');
+  const actions = article.querySelector('.postActions');
 
   const textarea = document.createElement('textarea');
   textarea.className = 'editArea';
@@ -91,11 +135,13 @@ function startEdit(article, post, token) {
   cancelBtn.textContent = 'Cancel';
 
   content.replaceWith(textarea);
-  editBtn.replaceWith(saveBtn);
-  saveBtn.after(cancelBtn);
+  actions.replaceChildren(saveBtn, cancelBtn);
   textarea.focus();
 
-  cancelBtn.addEventListener('click', () => loadPosts());
+  cancelBtn.addEventListener('click', () => {
+    isEditing = false;
+    loadPosts();
+  });
 
   saveBtn.addEventListener('click', async () => {
     const newContent = textarea.value.trim();
@@ -107,9 +153,14 @@ function startEdit(article, post, token) {
       const response = await fetch(`/api/shitposts/${post.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: newContent, editToken: token }),
+        body: JSON.stringify({
+          content: newContent,
+          editToken: token,
+          adminPassword: getAdminPassword(),
+        }),
       });
       if (!response.ok) throw new Error('Could not save');
+      isEditing = false;
       await loadPosts();
     } catch {
       feedStatus.textContent = 'Could not save edit';
@@ -119,7 +170,28 @@ function startEdit(article, post, token) {
   });
 }
 
+async function deletePost(post, token) {
+  if (!confirm('Delete this post? This cannot be undone.')) return;
+
+  try {
+    const response = await fetch(`/api/shitposts/${post.id}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        editToken: token,
+        adminPassword: getAdminPassword(),
+      }),
+    });
+    if (!response.ok) throw new Error('Could not delete');
+    removeEditToken(post.id);
+    await loadPosts();
+  } catch {
+    feedStatus.textContent = 'Could not delete post';
+  }
+}
+
 async function loadPosts() {
+  if (isEditing) return; // не сносим открытую форму редактирования
   try {
     const response = await fetch('/api/shitposts');
     if (!response.ok) throw new Error('Feed unavailable');
@@ -158,6 +230,20 @@ form.addEventListener('submit', async event => {
 
 contentInput.addEventListener('input', updateCharacterCount);
 refreshBtn.addEventListener('click', loadPosts);
+
+if (adminToggleBtn) {
+  adminToggleBtn.addEventListener('click', () => {
+    if (getAdminPassword()) {
+      clearAdminPassword();
+    } else {
+      promptAdminPassword();
+    }
+    updateAdminButton();
+    loadPosts();
+  });
+}
+
 updateCharacterCount();
+updateAdminButton();
 loadPosts();
 setInterval(loadPosts, 5000);

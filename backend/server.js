@@ -15,6 +15,7 @@ const STATE_FILE = '/app/data/state.json';
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
 const SHITPOSTS_FILE = path.join(DATA_DIR, 'shitposts.json');
 const SAVE_DEBOUNCE_MS = 3000;
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
 
 let grid = makeEmptyGrid();
 let ages = makeAgeGrid();
@@ -269,16 +270,21 @@ api.post('/shitposts', (req, res) => {
   res.status(201).json({ ok: true, post: publicPost, editToken });
 });
 
+function canModify(post, req) {
+  const editToken = String(req.body.editToken || '');
+  const adminPassword = String(req.body.adminPassword || '');
+  if (ADMIN_PASSWORD && adminPassword === ADMIN_PASSWORD) return true;
+  return Boolean(post.editToken) && post.editToken === editToken;
+}
+
 api.put('/shitposts/:id', (req, res) => {
   const { id } = req.params;
-  const editToken = String(req.body.editToken || '');
   const content = String(req.body.content || '').trim().slice(0, 280);
-
   if (!content) return res.status(400).json({ ok: false, error: 'Post cannot be empty' });
 
   const post = shitposts.find(p => p.id === id);
   if (!post) return res.status(404).json({ ok: false, error: 'Post not found' });
-  if (!post.editToken || post.editToken !== editToken) {
+  if (!canModify(post, req)) {
     return res.status(403).json({ ok: false, error: 'Not allowed to edit this post' });
   }
 
@@ -288,6 +294,20 @@ api.put('/shitposts/:id', (req, res) => {
 
   const { editToken: _, ...publicPost } = post;
   res.json({ ok: true, post: publicPost });
+});
+
+api.delete('/shitposts/:id', (req, res) => {
+  const { id } = req.params;
+
+  const index = shitposts.findIndex(p => p.id === id);
+  if (index === -1) return res.status(404).json({ ok: false, error: 'Post not found' });
+  if (!canModify(shitposts[index], req)) {
+    return res.status(403).json({ ok: false, error: 'Not allowed to delete this post' });
+  }
+
+  shitposts.splice(index, 1);
+  saveShitposts();
+  res.json({ ok: true });
 });
 
 app.use('/api', api);

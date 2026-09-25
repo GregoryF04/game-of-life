@@ -42,7 +42,13 @@
     </section>
 
     <section aria-labelledby="feedTitle">
-      <div class="feedHeading"><h2 id="feedTitle">The wall</h2><button id="refreshBtn" type="button">Refresh</button></div>
+      <div class="feedHeading">
+        <h2 id="feedTitle">The wall</h2>
+        <div class="headingActions">
+          <button id="adminToggleBtn" type="button">Admin</button>
+          <button id="refreshBtn" type="button">Refresh</button>
+        </div>
+      </div>
       <div id="feed" class="feed" aria-live="polite"></div>
     </section>
   </main>

@@ -138,6 +138,23 @@ button:hover {
   border-radius: 4px;
 }
 
+.siteNav {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  right: 12px;
+  width: auto;
+  max-width: none;
+  margin: 0;
+}
+
+.controls { top: 72px; }
+
+@media (max-width: 760px) {
+  .siteNav { left: 8px; right: 8px; top: 8px; }
+  .controls { top: 108px; left: 8px; right: 8px; max-height: calc(100vh - 116px); overflow-y: auto; }
+}
+
 .ruleControl {
   display: flex;
   align-items: center;

@@ -2,20 +2,33 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Mini Games v0.5</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mini Games</title>
+  <link rel="stylesheet" href="theme.css">
   <style>
-    body { font-family: sans-serif; background: #111; color: #eee; text-align: center; padding: 40px; }
-    a { display: inline-block; margin: 10px; padding: 15px 25px; background: #222; color: #fff; text-decoration: none; border-radius: 8px; }
-    a:hover { background: #333; }
+    body { min-width: 320px; min-height: 100vh; margin: 0; background: var(--site-bg); }
+    .home { padding: 40px 20px; text-align: center; }
+    .home h1 { margin: 0 0 24px; font-size: 28px; }
+    .gameLinks { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; }
+    .gameLinks a { display: inline-block; padding: 12px 20px; border: 1px solid var(--site-line); border-radius: 6px; background: var(--site-panel-solid); color: var(--site-ink); text-decoration: none; }
+    .gameLinks a:hover { background: #202b35; color: var(--site-accent-strong); }
+    @media (max-width: 480px) { .gameLinks { flex-direction: column; align-items: stretch; } }
   </style>
 </head>
 <body>
-  <h1>Mini Games v0.5</h1>
-  <a href="/game-of-life/">Game of Life</a>
-  <a href="/snake/">Snake :3</a>
-  <a href="/elementary-ca/">Elementary Cellular Automaton</a>
-  <a href="/particle-life/">Particle Life</a>
-  <a href="/status/">Server Status</a>
-  <!-- сюда добавятся ссылки на новые игры -->
+  <nav class="siteNav" aria-label="Main navigation">
+    <a class="siteBrand" href="/" aria-current="page"><span class="siteBrandMark">MG</span> Mini Games</a>
+    <div class="siteNavLinks"><a href="/game-of-life/">Life</a><a href="/snake/">Snake</a><a href="/elementary-ca/">Cellular</a><a href="/particle-life/">Particles</a><a href="/status/">Status</a></div>
+  </nav>
+  <main class="home">
+    <h1>Mini Games v0.5</h1>
+    <nav class="gameLinks" aria-label="Games">
+      <a href="/game-of-life/">Game of Life</a>
+      <a href="/snake/">Snake :3</a>
+      <a href="/elementary-ca/">Elementary Cellular Automaton</a>
+      <a href="/particle-life/">Particle Life</a>
+      <a href="/status/">Server Status</a>
+    </nav>
+  </main>
 </body>
 </html>

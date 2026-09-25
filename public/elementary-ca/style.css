@@ -117,6 +117,17 @@ input:hover {
   color: #fff;
 }
 
+.siteNav { width: 100%; margin: 0 0 12px; }
+
+@media (max-width: 560px) {
+  .toolbar { align-items: stretch; }
+  .toolbar > * { flex: 1 1 140px; }
+  .field input,
+  .field select,
+  .toolbar button { width: 100%; }
+  .switchField { flex: 1 1 100%; }
+}
+
 .patternLabel {
   display: flex;
   gap: 2px;

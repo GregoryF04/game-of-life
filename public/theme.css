@@ -1,0 +1,120 @@
+:root {
+  color-scheme: dark;
+  --site-bg: #080b10;
+  --site-panel: rgba(17, 23, 31, 0.92);
+  --site-panel-solid: #11171f;
+  --site-line: #2b3846;
+  --site-ink: #eef4f7;
+  --site-muted: #91a0ad;
+  --site-accent: #70e1c3;
+  --site-accent-strong: #b8f59f;
+  --site-shadow: 0 16px 45px rgba(0, 0, 0, 0.28);
+}
+
+* { box-sizing: border-box; }
+
+html { background: var(--site-bg); }
+
+body {
+  color: var(--site-ink);
+  font-family: "Segoe UI", system-ui, sans-serif;
+}
+
+body::before {
+  background:
+    radial-gradient(circle at 12% 0%, rgba(112, 225, 195, 0.1), transparent 30%),
+    linear-gradient(135deg, rgba(184, 245, 159, 0.035), transparent 45%),
+    repeating-linear-gradient(0deg, transparent 0 39px, rgba(255, 255, 255, 0.018) 40px);
+}
+
+.siteNav {
+  position: relative;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  width: min(100% - 24px, 1180px);
+  min-height: 48px;
+  margin: 12px auto 0;
+  padding: 7px 10px;
+  border: 1px solid var(--site-line);
+  border-radius: 8px;
+  background: var(--site-panel);
+  box-shadow: var(--site-shadow);
+  backdrop-filter: blur(10px);
+}
+
+.siteBrand,
+.siteNav a {
+  color: var(--site-ink);
+  text-decoration: none;
+}
+
+.siteBrand {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  min-width: max-content;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.siteBrandMark {
+  display: grid;
+  width: 25px;
+  height: 25px;
+  place-items: center;
+  border: 1px solid var(--site-accent);
+  border-radius: 6px;
+  color: var(--site-accent);
+  font-size: 12px;
+}
+
+.siteNavLinks {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  margin-left: auto;
+}
+
+.siteNavLinks a {
+  padding: 7px 9px;
+  border-radius: 5px;
+  color: var(--site-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.siteNav a:hover,
+.siteNav a:focus-visible,
+.siteNav a[aria-current="page"] {
+  background: rgba(112, 225, 195, 0.1);
+  color: var(--site-accent-strong);
+}
+
+.siteNav a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--site-accent);
+  outline-offset: 2px;
+}
+
+@media (max-width: 680px) {
+  .siteNav {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px;
+  }
+
+  .siteNavLinks {
+    width: 100%;
+    margin-left: 0;
+    overflow-x: auto;
+    scrollbar-width: thin;
+  }
+
+  .siteNavLinks a { flex: 0 0 auto; }
+}

@@ -11,6 +11,8 @@ const MIN_FPS = 1, MAX_FPS = 30;
 const IDLE_TIMEOUT_MS = 60_000;
 const WATCHDOG_INTERVAL_MS = 15_000;
 const STATE_FILE = '/app/data/state.json';
+const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
+const SHITPOSTS_FILE = path.join(DATA_DIR, 'shitposts.json');
 const SAVE_DEBOUNCE_MS = 3000;
 
 let grid = makeEmptyGrid();
@@ -22,6 +24,7 @@ let fps = 8;
 let intervalHandle = null;
 let lastClientSeen = Date.now();
 let saveTimeout = null;
+let shitposts = [];
 
 function makeEmptyGrid() {
   return Array.from({ length: ROWS }, () => new Array(COLS).fill(0));
@@ -55,6 +58,27 @@ function saveStateDebounced() {
   saveTimeout = setTimeout(saveStateNow, SAVE_DEBOUNCE_MS);
 }
 
+function loadShitposts() {
+  try {
+    const data = JSON.parse(fs.readFileSync(SHITPOSTS_FILE, 'utf8'));
+    if (Array.isArray(data)) shitposts = data.slice(-500);
+  } catch {
+    shitposts = [];
+  }
+}
+
+function saveShitposts() {
+  fs.mkdir(DATA_DIR, { recursive: true }, (mkdirError) => {
+    if (mkdirError) {
+      console.error('Failed to create Shitpost data directory:', mkdirError);
+      return;
+    }
+    fs.writeFile(SHITPOSTS_FILE, JSON.stringify(shitposts), (err) => {
+      if (err) console.error('Failed to save Shitpost feed:', err);
+    });
+  });
+}
+
 function loadState() {
   try {
     const data = fs.readFileSync(STATE_FILE, 'utf8');
@@ -81,6 +105,7 @@ function loadState() {
 
 // Restore saved state (size, grid, rule, speed) now that ROWS/COLS/grid/ages exist.
 loadState();
+loadShitposts();
 
 function countNeighbors(g, r, c) {
   let count = 0;
@@ -215,6 +240,27 @@ api.post('/rule', (req, res) => {
   highLife = Boolean(req.body.highLife);
   saveStateDebounced();
   res.json({ ok: true, highLife });
+});
+
+api.get('/shitposts', (req, res) => {
+  res.json({ posts: shitposts });
+});
+
+api.post('/shitposts', (req, res) => {
+  const author = String(req.body.author || 'Anonymous').trim().slice(0, 24) || 'Anonymous';
+  const content = String(req.body.content || '').trim().slice(0, 280);
+  if (!content) return res.status(400).json({ ok: false, error: 'Post cannot be empty' });
+
+  const post = {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    author,
+    content,
+    createdAt: new Date().toISOString(),
+  };
+  shitposts.push(post);
+  shitposts = shitposts.slice(-500);
+  saveShitposts();
+  res.status(201).json({ ok: true, post });
 });
 
 app.use('/api', api);

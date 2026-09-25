@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Shitpost - Mini Games</title>
+  <link rel="stylesheet" href="../theme.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <nav class="siteNav" aria-label="Main navigation">
+    <a class="siteBrand" href="/"><span class="siteBrandMark">MG</span> Mini Games</a>
+    <div class="siteNavLinks">
+      <a href="/game-of-life/">Life</a><a href="/snake/">Snake</a><a href="/elementary-ca/">Cellular</a><a href="/particle-life/">Particles</a><a href="/shitpost/" aria-current="page">Shitpost</a><a href="/status/">Status</a>
+    </div>
+  </nav>
+
+  <main class="hub">
+    <header class="hubHeader">
+      <div>
+        <p class="eyebrow">Open channel</p>
+        <h1>Shitpost</h1>
+        <p class="subhead">A public wall for fragments, questions, strange ideas, and useful accidents.</p>
+      </div>
+      <output id="feedStatus" class="feedStatus" aria-live="polite">Loading feed...</output>
+    </header>
+
+    <section class="composer" aria-labelledby="composerTitle">
+      <h2 id="composerTitle">Drop a thought</h2>
+      <form id="postForm">
+        <div class="composerRow">
+          <label>Handle <input id="authorInput" name="author" maxlength="24" placeholder="Anonymous"></label>
+          <output id="characterCount">0 / 280</output>
+        </div>
+        <label class="srOnly" for="contentInput">Post text</label>
+        <textarea id="contentInput" name="content" maxlength="280" required placeholder="What is on your mind?"></textarea>
+        <div class="composerFooter">
+          <span>Keep it human. Keep it interesting.</span>
+          <button type="submit">Post it</button>
+        </div>
+      </form>
+    </section>
+
+    <section aria-labelledby="feedTitle">
+      <div class="feedHeading"><h2 id="feedTitle">The wall</h2><button id="refreshBtn" type="button">Refresh</button></div>
+      <div id="feed" class="feed" aria-live="polite"></div>
+    </section>
+  </main>
+  <script src="script.js"></script>
+</body>
+</html>

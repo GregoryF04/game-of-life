@@ -3,6 +3,7 @@ name: Deploy to Oracle VM
 on:
   push:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   deploy:
@@ -14,7 +15,10 @@ jobs:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script_stop: true
           script: |
             cd ~/game-of-life
-            git pull origin main
+            git fetch origin
+            git reset --hard origin/main
             sudo docker compose up -d --build
+            curl -fsS http://127.0.0.1:8080/health

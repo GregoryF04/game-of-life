@@ -1,13 +1,58 @@
-name: Deploy to Oracle VM
+name: CI/CD
 
 on:
   push:
     branches: [main]
+  pull_request:
   workflow_dispatch:
 
 jobs:
-  deploy:
+  test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Syntax check (backend + all browser scripts)
+        run: |
+          node --check backend/server.js
+          find public -name '*.js' -print0 | xargs -0 -n1 node --check
+
+      - name: Build Docker image
+        run: docker build -t game-of-life-web .
+
+      - name: Smoke test
+        run: |
+          docker run -d --name smoke -p 8080:3000 game-of-life-web
+          ok=0
+          for i in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:8080/health >/dev/null; then ok=1; break; fi
+            sleep 1
+          done
+          [ "$ok" = 1 ] || { echo "health never came up"; exit 1; }
+          curl -fsS http://127.0.0.1:8080/api/state >/dev/null
+          for d in public/*/; do
+            name=$(basename "$d")
+            echo "checking /$name/"
+            curl -fsS "http://127.0.0.1:8080/$name/" >/dev/null
+          done
+
+      - name: Container logs on failure
+        if: failure()
+        run: docker logs smoke || true
+
+  deploy:
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: deploy
+      cancel-in-progress: false
     steps:
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.0.0
@@ -21,4 +66,17 @@ jobs:
             git fetch origin
             git reset --hard origin/main
             sudo docker compose up -d --build
-            curl -fsS http://127.0.0.1:8080/health
+            ok=0
+            for i in $(seq 1 20); do
+              if curl -fsS http://127.0.0.1:8080/health >/dev/null; then ok=1; break; fi
+              sleep 2
+            done
+            [ "$ok" = 1 ] || { sudo docker compose logs --tail=50; exit 1; }
+
+      - name: Verify public HTTPS endpoint
+        run: |
+          for i in $(seq 1 10); do
+            if curl -fsS https://games.gregorydump.download/health >/dev/null; then exit 0; fi
+            sleep 3
+          done
+          exit 1

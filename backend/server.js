@@ -379,3 +379,5 @@ process.on('SIGINT', shutdown);
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Game of Life running on port ${PORT}`));
+
+this is not valid javascript

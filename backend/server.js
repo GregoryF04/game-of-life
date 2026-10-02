@@ -274,21 +274,39 @@ api.post('/shitposts/:id/replies', (req, res) => {
   const post = shitposts.find(item => item.id === req.params.id);
   if (!post) return res.status(404).json({ ok: false, error: 'Post not found' });
 
+  const parentReplyId = String(req.body.parentReplyId || '');
+  const parentReply = parentReplyId ? findShitpostReply(post.replies, parentReplyId) : null;
+  if (parentReplyId && !parentReply) {
+    return res.status(404).json({ ok: false, error: 'Reply not found' });
+  }
+
   const author = String(req.body.author || 'Anonymous').trim().slice(0, 24) || 'Anonymous';
   const content = String(req.body.content || '').trim().slice(0, 280);
   if (!content) return res.status(400).json({ ok: false, error: 'Reply cannot be empty' });
 
-  if (!Array.isArray(post.replies)) post.replies = [];
+  const replyList = parentReply
+    ? (Array.isArray(parentReply.replies) ? parentReply.replies : (parentReply.replies = []))
+    : (Array.isArray(post.replies) ? post.replies : (post.replies = []));
   const reply = {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     author,
     content,
     createdAt: new Date().toISOString(),
   };
-  post.replies.push(reply);
+  replyList.push(reply);
   saveShitposts();
   res.status(201).json({ ok: true, reply });
 });
+
+function findShitpostReply(replies, replyId) {
+  if (!Array.isArray(replies)) return null;
+  for (const reply of replies) {
+    if (reply.id === replyId) return reply;
+    const nestedReply = findShitpostReply(reply.replies, replyId);
+    if (nestedReply) return nestedReply;
+  }
+  return null;
+}
 
 function canModify(post, req) {
   const editToken = String(req.body.editToken || '');

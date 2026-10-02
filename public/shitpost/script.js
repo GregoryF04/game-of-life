@@ -91,33 +91,6 @@ function renderPosts(posts) {
 
     article.append(meta, content);
 
-    if (Array.isArray(post.replies) && post.replies.length) {
-      const replies = document.createElement('div');
-      replies.className = 'replyList';
-      post.replies.forEach(reply => {
-        const replyElement = document.createElement('div');
-        replyElement.className = 'reply';
-
-        const replyMeta = document.createElement('div');
-        replyMeta.className = 'postMeta';
-        const replyAuthor = document.createElement('span');
-        replyAuthor.className = 'postAuthor';
-        replyAuthor.textContent = `@${reply.author}`;
-        const replyDate = document.createElement('time');
-        replyDate.dateTime = reply.createdAt;
-        replyDate.textContent = new Date(reply.createdAt).toLocaleString();
-        replyMeta.append(replyAuthor, replyDate);
-
-        const replyContent = document.createElement('div');
-        replyContent.className = 'postContent';
-        replyContent.textContent = reply.content;
-
-        replyElement.append(replyMeta, replyContent);
-        replies.appendChild(replyElement);
-      });
-      article.appendChild(replies);
-    }
-
     const actions = document.createElement('div');
     actions.className = 'postActions';
     const replyBtn = document.createElement('button');
@@ -144,12 +117,57 @@ function renderPosts(posts) {
     }
 
     article.appendChild(actions);
+    if (Array.isArray(post.replies) && post.replies.length) {
+      article.appendChild(renderReplies(post.replies, post));
+    }
     feed.appendChild(article);
   });
 }
 
-function startReply(article, post) {
-  const existingForm = article.querySelector('.replyForm');
+function renderReplies(replies, post) {
+  const list = document.createElement('div');
+  list.className = 'replyList';
+
+  replies.forEach(reply => {
+    const element = document.createElement('div');
+    element.className = 'reply';
+
+    const meta = document.createElement('div');
+    meta.className = 'postMeta';
+    const author = document.createElement('span');
+    author.className = 'postAuthor';
+    author.textContent = `@${reply.author}`;
+    const date = document.createElement('time');
+    date.dateTime = reply.createdAt;
+    date.textContent = new Date(reply.createdAt).toLocaleString();
+    meta.append(author, date);
+
+    const content = document.createElement('div');
+    content.className = 'postContent';
+    content.textContent = reply.content;
+    element.append(meta, content);
+
+    const actions = document.createElement('div');
+    actions.className = 'postActions';
+    const replyButton = document.createElement('button');
+    replyButton.type = 'button';
+    replyButton.className = 'replyBtn';
+    replyButton.textContent = 'Reply';
+    replyButton.addEventListener('click', () => startReply(element, post, reply));
+    actions.appendChild(replyButton);
+    element.appendChild(actions);
+
+    if (Array.isArray(reply.replies) && reply.replies.length) {
+      element.appendChild(renderReplies(reply.replies, post));
+    }
+    list.appendChild(element);
+  });
+
+  return list;
+}
+
+function startReply(container, post, parentReply = null) {
+  const existingForm = Array.from(container.children).find(child => child.classList.contains('replyForm'));
   if (existingForm) {
     existingForm.querySelector('textarea').focus();
     return;
@@ -183,12 +201,11 @@ function startReply(article, post) {
   cancelButton.textContent = 'Cancel';
   cancelButton.addEventListener('click', () => {
     isEditing = false;
-    replyForm.remove();
     loadPosts();
   });
 
   replyForm.append(authorInput, contentInput, submitButton, cancelButton);
-  article.appendChild(replyForm);
+  container.appendChild(replyForm);
   contentInput.focus();
 
   replyForm.addEventListener('submit', async event => {
@@ -199,7 +216,11 @@ function startReply(article, post) {
       const response = await fetch(`/api/shitposts/${post.id}/replies`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ author: authorInput.value, content: contentInput.value }),
+        body: JSON.stringify({
+          author: authorInput.value,
+          content: contentInput.value,
+          parentReplyId: parentReply?.id,
+        }),
       });
       if (!response.ok) throw new Error('Could not reply');
       isEditing = false;

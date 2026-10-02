@@ -90,9 +90,52 @@ button:hover { background: var(--site-accent-strong); }
   padding: 4px 9px;
   margin-top: 0;
 }
+.replyBtn,
+.cancelReplyBtn {
+  border-color: var(--site-line);
+  background: transparent;
+  color: var(--site-muted);
+  font-size: 11px;
+  font-weight: 400;
+  padding: 4px 9px;
+  margin-top: 0;
+}
 .deleteBtn:hover {
   border-color: #d94f4f;
   color: #d94f4f;
+}
+.replyList {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0 0 14px;
+  padding-left: 12px;
+  border-left: 2px solid var(--site-line);
+}
+.reply {
+  padding: 10px 12px;
+  border: 1px solid var(--site-line);
+  border-radius: 5px;
+  background: #0b1016;
+}
+.reply .postMeta { margin-bottom: 5px; }
+.replyForm {
+  display: grid;
+  grid-template-columns: minmax(0, 170px) 1fr auto auto;
+  gap: 8px;
+  margin-top: 12px;
+}
+.replyForm input,
+.replyForm textarea {
+  width: 100%;
+  min-width: 0;
+  padding: 7px 9px;
+}
+.replyForm textarea {
+  min-height: 36px;
+  resize: vertical;
+}
+.replyForm button {
+  align-self: start;
 }
 .editArea {
   display: block;
@@ -110,4 +153,7 @@ button:hover { background: var(--site-accent-strong); }
   .composerFooter { align-items: flex-start; flex-direction: column; }
   .composerFooter button { width: 100%; }
   input { width: 140px; }
+  .replyForm { grid-template-columns: 1fr 1fr; }
+  .replyForm input,
+  .replyForm textarea { grid-column: 1 / -1; }
 }

@@ -270,6 +270,26 @@ api.post('/shitposts', (req, res) => {
   res.status(201).json({ ok: true, post: publicPost, editToken });
 });
 
+api.post('/shitposts/:id/replies', (req, res) => {
+  const post = shitposts.find(item => item.id === req.params.id);
+  if (!post) return res.status(404).json({ ok: false, error: 'Post not found' });
+
+  const author = String(req.body.author || 'Anonymous').trim().slice(0, 24) || 'Anonymous';
+  const content = String(req.body.content || '').trim().slice(0, 280);
+  if (!content) return res.status(400).json({ ok: false, error: 'Reply cannot be empty' });
+
+  if (!Array.isArray(post.replies)) post.replies = [];
+  const reply = {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    author,
+    content,
+    createdAt: new Date().toISOString(),
+  };
+  post.replies.push(reply);
+  saveShitposts();
+  res.status(201).json({ ok: true, reply });
+});
+
 function canModify(post, req) {
   const editToken = String(req.body.editToken || '');
   const adminPassword = String(req.body.adminPassword || '');

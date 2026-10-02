@@ -91,10 +91,43 @@ function renderPosts(posts) {
 
     article.append(meta, content);
 
-    if (editTokens[post.id] || isAdmin) {
-      const actions = document.createElement('div');
-      actions.className = 'postActions';
+    if (Array.isArray(post.replies) && post.replies.length) {
+      const replies = document.createElement('div');
+      replies.className = 'replyList';
+      post.replies.forEach(reply => {
+        const replyElement = document.createElement('div');
+        replyElement.className = 'reply';
 
+        const replyMeta = document.createElement('div');
+        replyMeta.className = 'postMeta';
+        const replyAuthor = document.createElement('span');
+        replyAuthor.className = 'postAuthor';
+        replyAuthor.textContent = `@${reply.author}`;
+        const replyDate = document.createElement('time');
+        replyDate.dateTime = reply.createdAt;
+        replyDate.textContent = new Date(reply.createdAt).toLocaleString();
+        replyMeta.append(replyAuthor, replyDate);
+
+        const replyContent = document.createElement('div');
+        replyContent.className = 'postContent';
+        replyContent.textContent = reply.content;
+
+        replyElement.append(replyMeta, replyContent);
+        replies.appendChild(replyElement);
+      });
+      article.appendChild(replies);
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'postActions';
+    const replyBtn = document.createElement('button');
+    replyBtn.type = 'button';
+    replyBtn.className = 'replyBtn';
+    replyBtn.textContent = 'Reply';
+    replyBtn.addEventListener('click', () => startReply(article, post));
+    actions.appendChild(replyBtn);
+
+    if (editTokens[post.id] || isAdmin) {
       const editBtn = document.createElement('button');
       editBtn.type = 'button';
       editBtn.className = 'editBtn';
@@ -108,10 +141,74 @@ function renderPosts(posts) {
       deleteBtn.addEventListener('click', () => deletePost(post, editTokens[post.id]));
 
       actions.append(editBtn, deleteBtn);
-      article.appendChild(actions);
     }
 
+    article.appendChild(actions);
     feed.appendChild(article);
+  });
+}
+
+function startReply(article, post) {
+  const existingForm = article.querySelector('.replyForm');
+  if (existingForm) {
+    existingForm.querySelector('textarea').focus();
+    return;
+  }
+
+  isEditing = true;
+  const replyForm = document.createElement('form');
+  replyForm.className = 'replyForm';
+
+  const authorInput = document.createElement('input');
+  authorInput.name = 'author';
+  authorInput.maxLength = 24;
+  authorInput.placeholder = 'Anonymous';
+  authorInput.value = document.getElementById('authorInput').value;
+  authorInput.setAttribute('aria-label', 'Reply handle');
+
+  const contentInput = document.createElement('textarea');
+  contentInput.name = 'content';
+  contentInput.maxLength = 280;
+  contentInput.required = true;
+  contentInput.placeholder = 'Write a reply...';
+  contentInput.setAttribute('aria-label', 'Reply text');
+
+  const submitButton = document.createElement('button');
+  submitButton.type = 'submit';
+  submitButton.textContent = 'Send reply';
+
+  const cancelButton = document.createElement('button');
+  cancelButton.type = 'button';
+  cancelButton.className = 'cancelReplyBtn';
+  cancelButton.textContent = 'Cancel';
+  cancelButton.addEventListener('click', () => {
+    isEditing = false;
+    replyForm.remove();
+    loadPosts();
+  });
+
+  replyForm.append(authorInput, contentInput, submitButton, cancelButton);
+  article.appendChild(replyForm);
+  contentInput.focus();
+
+  replyForm.addEventListener('submit', async event => {
+    event.preventDefault();
+    submitButton.disabled = true;
+    cancelButton.disabled = true;
+    try {
+      const response = await fetch(`/api/shitposts/${post.id}/replies`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ author: authorInput.value, content: contentInput.value }),
+      });
+      if (!response.ok) throw new Error('Could not reply');
+      isEditing = false;
+      await loadPosts();
+    } catch {
+      feedStatus.textContent = 'Could not send reply right now';
+      submitButton.disabled = false;
+      cancelButton.disabled = false;
+    }
   });
 }
 

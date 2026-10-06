@@ -127,6 +127,8 @@ function renderPosts(posts) {
 function renderReplies(replies, post) {
   const list = document.createElement('div');
   list.className = 'replyList';
+  const editTokens = getEditTokens();
+  const isAdmin = Boolean(getAdminPassword());
 
   replies.forEach(reply => {
     const element = document.createElement('div');
@@ -139,7 +141,9 @@ function renderReplies(replies, post) {
     author.textContent = `@${reply.author}`;
     const date = document.createElement('time');
     date.dateTime = reply.createdAt;
-    date.textContent = new Date(reply.createdAt).toLocaleString();
+    date.textContent = reply.editedAt
+      ? `${new Date(reply.editedAt).toLocaleString()} (edited)`
+      : new Date(reply.createdAt).toLocaleString();
     meta.append(author, date);
 
     const content = document.createElement('div');
@@ -155,6 +159,23 @@ function renderReplies(replies, post) {
     replyButton.textContent = 'Reply';
     replyButton.addEventListener('click', () => startReply(element, post, reply));
     actions.appendChild(replyButton);
+
+    if (editTokens[reply.id] || isAdmin) {
+      const editButton = document.createElement('button');
+      editButton.type = 'button';
+      editButton.className = 'editBtn';
+      editButton.textContent = 'Edit';
+      editButton.addEventListener('click', () => startEditReply(element, post, reply, editTokens[reply.id]));
+
+      const deleteButton = document.createElement('button');
+      deleteButton.type = 'button';
+      deleteButton.className = 'deleteBtn';
+      deleteButton.textContent = 'Delete';
+      deleteButton.addEventListener('click', () => deleteReply(post, reply, editTokens[reply.id]));
+
+      actions.append(editButton, deleteButton);
+    }
+
     element.appendChild(actions);
 
     if (Array.isArray(reply.replies) && reply.replies.length) {
@@ -223,6 +244,10 @@ function startReply(container, post, parentReply = null) {
         }),
       });
       if (!response.ok) throw new Error('Could not reply');
+      const data = await response.json();
+      if (data.reply && data.reply.editToken) {
+        saveEditToken(data.reply.id, data.reply.editToken);
+      }
       isEditing = false;
       await loadPosts();
     } catch {
@@ -305,6 +330,87 @@ async function deletePost(post, token) {
     await loadPosts();
   } catch {
     feedStatus.textContent = 'Could not delete post';
+  }
+}
+
+function startEditReply(element, post, reply, token) {
+  isEditing = true;
+
+  const content = element.querySelector('.postContent');
+  const actions = element.querySelector('.postActions');
+
+  const textarea = document.createElement('textarea');
+  textarea.className = 'editArea';
+  textarea.maxLength = 280;
+  textarea.value = reply.content;
+
+  const saveBtn = document.createElement('button');
+  saveBtn.type = 'button';
+  saveBtn.textContent = 'Save';
+
+  const cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.textContent = 'Cancel';
+
+  content.replaceWith(textarea);
+  actions.replaceChildren(saveBtn, cancelBtn);
+  textarea.focus();
+
+  cancelBtn.addEventListener('click', () => {
+    isEditing = false;
+    loadPosts();
+  });
+
+  saveBtn.addEventListener('click', async () => {
+    const newContent = textarea.value.trim();
+    if (!newContent) return;
+
+    saveBtn.disabled = true;
+    cancelBtn.disabled = true;
+    try {
+      const response = await fetch(`/api/shitposts/${post.id}/replies/${reply.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          content: newContent,
+          editToken: token,
+          adminPassword: getAdminPassword(),
+        }),
+      });
+      if (!response.ok) throw new Error('Could not save');
+      if (response.headers.get('content-type')?.includes('application/json')) {
+        const data = await response.json();
+        if (data.reply && data.reply.editToken) {
+          saveEditToken(data.reply.id, data.reply.editToken);
+        }
+      }
+      isEditing = false;
+      await loadPosts();
+    } catch {
+      feedStatus.textContent = 'Could not save reply';
+      saveBtn.disabled = false;
+      cancelBtn.disabled = false;
+    }
+  });
+}
+
+async function deleteReply(post, reply, token) {
+  if (!confirm('Delete this reply? This cannot be undone.')) return;
+
+  try {
+    const response = await fetch(`/api/shitposts/${post.id}/replies/${reply.id}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        editToken: token,
+        adminPassword: getAdminPassword(),
+      }),
+    });
+    if (!response.ok) throw new Error('Could not delete');
+    removeEditToken(reply.id);
+    await loadPosts();
+  } catch {
+    feedStatus.textContent = 'Could not delete reply';
   }
 }
 

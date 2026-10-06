@@ -244,8 +244,24 @@ api.post('/rule', (req, res) => {
   res.json({ ok: true, highLife });
 });
 
+function stripEditTokenFromReply(reply) {
+  const { editToken, ...rest } = reply;
+  if (Array.isArray(rest.replies)) {
+    rest.replies = rest.replies.map(stripEditTokenFromReply);
+  }
+  return rest;
+}
+
+function sanitizePostForClient(post) {
+  const { editToken, ...publicPost } = post;
+  if (Array.isArray(publicPost.replies)) {
+    publicPost.replies = publicPost.replies.map(stripEditTokenFromReply);
+  }
+  return publicPost;
+}
+
 api.get('/shitposts', (req, res) => {
-  const publicPosts = shitposts.map(({ editToken, ...rest }) => rest);
+  const publicPosts = shitposts.map(sanitizePostForClient);
   res.json({ posts: publicPosts });
 });
 
@@ -287,15 +303,17 @@ api.post('/shitposts/:id/replies', (req, res) => {
   const replyList = parentReply
     ? (Array.isArray(parentReply.replies) ? parentReply.replies : (parentReply.replies = []))
     : (Array.isArray(post.replies) ? post.replies : (post.replies = []));
+  const editToken = crypto.randomBytes(16).toString('hex');
   const reply = {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     author,
     content,
     createdAt: new Date().toISOString(),
+    editToken,
   };
   replyList.push(reply);
   saveShitposts();
-  res.status(201).json({ ok: true, reply });
+  res.status(201).json({ ok: true, reply, editToken });
 });
 
 function findShitpostReply(replies, replyId) {
@@ -306,6 +324,21 @@ function findShitpostReply(replies, replyId) {
     if (nestedReply) return nestedReply;
   }
   return null;
+}
+
+function removeShitpostReply(replies, replyId) {
+  if (!Array.isArray(replies)) return false;
+  const index = replies.findIndex(reply => reply.id === replyId);
+  if (index !== -1) {
+    replies.splice(index, 1);
+    return true;
+  }
+
+  for (const reply of replies) {
+    if (removeShitpostReply(reply.replies, replyId)) return true;
+  }
+
+  return false;
 }
 
 function canModify(post, req) {
@@ -344,6 +377,47 @@ api.delete('/shitposts/:id', (req, res) => {
   }
 
   shitposts.splice(index, 1);
+  saveShitposts();
+  res.json({ ok: true });
+});
+
+api.put('/shitposts/:postId/replies/:replyId', (req, res) => {
+  const { postId, replyId } = req.params;
+  const post = shitposts.find(item => item.id === postId);
+  if (!post) return res.status(404).json({ ok: false, error: 'Post not found' });
+
+  const reply = findShitpostReply(post.replies, replyId);
+  if (!reply) return res.status(404).json({ ok: false, error: 'Reply not found' });
+
+  if (!canModify(reply, req)) {
+    return res.status(403).json({ ok: false, error: 'Not allowed to edit this reply' });
+  }
+
+  const content = String(req.body.content || '').trim().slice(0, 280);
+  if (!content) return res.status(400).json({ ok: false, error: 'Reply cannot be empty' });
+
+  reply.content = content;
+  reply.editedAt = new Date().toISOString();
+  saveShitposts();
+
+  res.json({ ok: true, reply: stripEditTokenFromReply(reply) });
+});
+
+api.delete('/shitposts/:postId/replies/:replyId', (req, res) => {
+  const { postId, replyId } = req.params;
+  const post = shitposts.find(item => item.id === postId);
+  if (!post) return res.status(404).json({ ok: false, error: 'Post not found' });
+
+  const reply = findShitpostReply(post.replies, replyId);
+  if (!reply) return res.status(404).json({ ok: false, error: 'Reply not found' });
+
+  if (!canModify(reply, req)) {
+    return res.status(403).json({ ok: false, error: 'Not allowed to delete this reply' });
+  }
+
+  const removed = removeShitpostReply(post.replies, replyId);
+  if (!removed) return res.status(404).json({ ok: false, error: 'Reply not found' });
+
   saveShitposts();
   res.json({ ok: true });
 });

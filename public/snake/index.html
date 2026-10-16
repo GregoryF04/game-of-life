@@ -42,6 +42,9 @@
         <button id="hamiltonianButton" class="controlButton secondary" type="button" aria-pressed="false">Hamiltonian cycle</button>
         <button class="controlButton secondary" data-fullscreen-target=".boardFrame" type="button" aria-pressed="false">Fullscreen</button>
         <label class="previewToggle"><input id="aiPreviewToggle" type="checkbox"> Show AI path</label>
+        <label class="speedControl">Speed <output id="speedValue">3 / 8</output>
+          <input id="speedRange" type="range" min="1" max="8" value="3" aria-label="Game speed">
+        </label>
       </div>
 
       <div class="dPad" aria-label="Touch controls">

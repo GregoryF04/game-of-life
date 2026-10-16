@@ -1,9 +1,11 @@
+'use strict';
+
 const canvas = document.getElementById('board');
 const context = canvas.getContext('2d');
+const boardFrame = document.querySelector('.boardFrame');
 const scoreElement = document.getElementById('score');
 const bestScoreElement = document.getElementById('bestScore');
 const message = document.getElementById('message');
-const messageIcon = message.querySelector('.messageIcon');
 const messageTitle = message.querySelector('h2');
 const messageText = message.querySelector('p');
 const startButton = document.getElementById('startButton');
@@ -12,156 +14,467 @@ const restartButton = document.getElementById('restartButton');
 const aiButton = document.getElementById('aiButton');
 const hamiltonianButton = document.getElementById('hamiltonianButton');
 const aiPreviewToggle = document.getElementById('aiPreviewToggle');
+const speedRange = document.getElementById('speedRange');
+const speedValue = document.getElementById('speedValue');
 
 const gridSize = 20;
+const cellCount = gridSize * gridSize;
 const cellSize = canvas.width / gridSize;
-const tickDuration = 115;
-let snake;
-let food;
-let direction;
-let nextDirection;
+const speedLevels = [200, 150, 115, 85, 60, 40, 25, 12]; // ms per tick, level 1..8
+const defaultSpeedLevel = 3;
+const maxQueuedInputs = 3;
+const shortcutMaxFill = 0.5; // Hamiltonian shortcuts are used only while snake is shorter than this share of the board
+const swipeThreshold = 24;
+
+const DIRS = {
+  up: { x: 0, y: -1 },
+  down: { x: 0, y: 1 },
+  left: { x: -1, y: 0 },
+  right: { x: 1, y: 0 },
+};
+const directionList = [DIRS.up, DIRS.right, DIRS.down, DIRS.left];
+const keyDirections = {
+  ArrowUp: DIRS.up, KeyW: DIRS.up,
+  ArrowDown: DIRS.down, KeyS: DIRS.down,
+  ArrowLeft: DIRS.left, KeyA: DIRS.left,
+  ArrowRight: DIRS.right, KeyD: DIRS.right,
+};
+
+function loadStored(key, fallback) {
+  try {
+    const value = localStorage.getItem(key);
+    return value === null ? fallback : value;
+  } catch {
+    return fallback;
+  }
+}
+
+function saveStored(key, value) {
+  try {
+    localStorage.setItem(key, String(value));
+  } catch {
+    /* storage unavailable (private mode, blocked cookies) */
+  }
+}
+
+let snake = [];
+let food = null;
+let direction = DIRS.right;
+let nextDirection = direction;
+let inputQueue = [];
 let score = 0;
-let bestScore = Number(localStorage.getItem('snake-best-score')) || 0;
-let gameState = 'ready';
-let aiEnabled = false;
-let hamiltonianEnabled = false;
+let bestScore = Number(loadStored('snake-best-score', 0)) || 0;
+let gameState = 'ready'; // ready | playing | paused | over
+let aiMode = 'off'; // off | ai | ham
 let hamiltonianCycle = [];
-let hamiltonianIndex = 0;
+let cycleIndexOf = new Int16Array(cellCount);
 let gameTimer = null;
-let aiPreviewEnabled = localStorage.getItem('snake-ai-preview') === 'true';
+let aiPreviewEnabled = loadStored('snake-ai-preview', 'false') === 'true';
+let speedLevel = Math.min(speedLevels.length, Math.max(1, Number(loadStored('snake-speed', defaultSpeedLevel)) || defaultSpeedLevel));
+let tickDuration = speedLevels[speedLevel - 1];
 
 bestScoreElement.textContent = bestScore;
 aiPreviewToggle.checked = aiPreviewEnabled;
+speedRange.value = speedLevel;
+speedValue.value = `${speedLevel} / ${speedLevels.length}`;
+
+/* ---------- helpers ---------- */
+
+function idOf(cell) {
+  return cell.y * gridSize + cell.x;
+}
+
+function cellFromId(id) {
+  return { x: id % gridSize, y: Math.floor(id / gridSize) };
+}
+
+function dirBetween(from, to) {
+  return { x: to.x - from.x, y: to.y - from.y };
+}
+
+function isOpenCell(cell, blocked) {
+  return cell.x >= 0 && cell.x < gridSize && cell.y >= 0 && cell.y < gridSize && !blocked.has(idOf(cell));
+}
+
+function createFood() {
+  const occupied = new Set(snake.map(idOf));
+  const freeCells = [];
+  for (let id = 0; id < cellCount; id++) {
+    if (!occupied.has(id)) freeCells.push(cellFromId(id));
+  }
+  return freeCells.length ? freeCells[Math.floor(Math.random() * freeCells.length)] : null;
+}
+
+/* ---------- reset ---------- */
 
 function resetGame() {
-  if (hamiltonianEnabled) {
-    resetHamiltonianGame();
-    return;
+  inputQueue = [];
+  score = 0;
+  scoreElement.textContent = score;
+  pauseButton.textContent = 'Pause';
+
+  if (aiMode === 'ham') {
+    applyCycle(createHamiltonianCycle());
+    const length = hamiltonianCycle.length;
+    const headIndex = Math.floor(Math.random() * length);
+    snake = [0, 1, 2].map(offset => hamiltonianCycle[(headIndex - offset + length) % length]);
+    direction = dirBetween(snake[0], hamiltonianCycle[(headIndex + 1) % length]);
+  } else {
+    snake = [{ x: 10, y: 10 }, { x: 9, y: 10 }, { x: 8, y: 10 }];
+    direction = DIRS.right;
   }
-  snake = [{ x: 10, y: 10 }, { x: 9, y: 10 }, { x: 8, y: 10 }];
-  direction = { x: 1, y: 0 };
+
   nextDirection = direction;
-  score = 0;
-  scoreElement.textContent = score;
   food = createFood();
   draw();
 }
 
-function resetHamiltonianGame() {
-  hamiltonianCycle = createHamiltonianCycle();
-  hamiltonianIndex = Math.floor(Math.random() * hamiltonianCycle.length);
-  snake = [0, 1, 2].map(offset =>
-    hamiltonianCycle[(hamiltonianIndex - offset + hamiltonianCycle.length) % hamiltonianCycle.length],
-  );
-  const nextCell = hamiltonianCycle[(hamiltonianIndex + 1) % hamiltonianCycle.length];
-  direction = { x: nextCell.x - snake[0].x, y: nextCell.y - snake[0].y };
-  nextDirection = direction;
-  score = 0;
-  scoreElement.textContent = score;
-  food = createFood();
-  draw();
+/* ---------- Hamiltonian cycle ---------- */
+
+function applyCycle(cycle) {
+  hamiltonianCycle = cycle;
+  cycleIndexOf = new Int16Array(cellCount);
+  cycle.forEach((cell, index) => {
+    cycleIndexOf[idOf(cell)] = index;
+  });
 }
 
+function reverseRange(array, from, to) {
+  while (from < to) {
+    const tmp = array[from];
+    array[from] = array[to];
+    array[to] = tmp;
+    from++;
+    to--;
+  }
+}
+
+// Random Hamiltonian cycle built with the "backbite" algorithm on a Hamiltonian path.
 function createHamiltonianCycle() {
-  const baseCycle = [];
-  for (let x = 0; x < gridSize; x++) baseCycle.push({ x, y: 0 });
+  const base = [];
+  const add = (x, y) => base.push(y * gridSize + x);
+  for (let x = 0; x < gridSize; x++) add(x, 0);
   for (let y = 1; y < gridSize; y++) {
     if (y % 2 === 1) {
-      for (let x = gridSize - 1; x >= 1; x--) baseCycle.push({ x, y });
+      for (let x = gridSize - 1; x >= 1; x--) add(x, y);
     } else {
-      for (let x = 1; x < gridSize; x++) baseCycle.push({ x, y });
+      for (let x = 1; x < gridSize; x++) add(x, y);
     }
   }
-  for (let y = gridSize - 1; y >= 1; y--) baseCycle.push({ x: 0, y });
+  for (let y = gridSize - 1; y >= 1; y--) add(0, y);
 
-  let path = [...baseCycle];
-  const minimumMutations = gridSize * gridSize * 4;
-  const maximumMutations = gridSize * gridSize * 40;
+  const path = base.slice();
+  const last = path.length - 1;
+  const position = new Int16Array(cellCount);
+  const reindex = (from, to) => {
+    for (let i = from; i <= to; i++) position[path[i]] = i;
+  };
+  reindex(0, last);
+
+  const minimumMutations = cellCount * 2;
+  const maximumMutations = cellCount * 20;
   let closed = false;
 
   for (let attempt = 0; attempt < maximumMutations; attempt++) {
-    if (Math.random() < 0.5) path.reverse();
-    const endpoint = path[path.length - 1];
-    const candidates = getDirections()
-      .map(direction => ({ x: endpoint.x + direction.x, y: endpoint.y + direction.y }))
-      .filter(cell => isOpenCell(cell, new Set()) && cellKey(cell) !== cellKey(path[path.length - 2]));
-    if (!candidates.length) continue;
+    const fromEnd = Math.random() < 0.5;
+    const end = path[fromEnd ? last : 0];
+    const step = directionList[Math.floor(Math.random() * 4)];
+    const nx = (end % gridSize) + step.x;
+    const ny = Math.floor(end / gridSize) + step.y;
+    if (nx < 0 || nx >= gridSize || ny < 0 || ny >= gridSize) continue;
 
-    const neighbor = candidates[Math.floor(Math.random() * candidates.length)];
-    const neighborIndex = path.findIndex(cell => cellKey(cell) === cellKey(neighbor));
-    if (neighborIndex === 0) {
-      if (attempt >= minimumMutations) {
+    const index = position[ny * gridSize + nx];
+    if (fromEnd) {
+      if (index >= last - 1) continue;
+      reverseRange(path, index + 1, last);
+      reindex(index + 1, last);
+    } else {
+      if (index <= 1) continue;
+      reverseRange(path, 0, index - 1);
+      reindex(0, index - 1);
+    }
+
+    if (attempt >= minimumMutations) {
+      const a = path[0];
+      const b = path[last];
+      const distance = Math.abs((a % gridSize) - (b % gridSize)) + Math.abs(Math.floor(a / gridSize) - Math.floor(b / gridSize));
+      if (distance === 1) {
         closed = true;
         break;
       }
-      continue;
     }
-    if (neighborIndex < 0) continue;
-
-    path = path.slice(0, neighborIndex + 1).concat(path.slice(neighborIndex + 1).reverse());
   }
 
-  if (!closed) path = baseCycle;
-  const offset = Math.floor(Math.random() * path.length);
-  return path.slice(offset).concat(path.slice(0, offset));
+  const cycleIds = closed ? path : base;
+  const offset = Math.floor(Math.random() * cycleIds.length);
+  const cells = cycleIds.slice(offset).concat(cycleIds.slice(0, offset)).map(cellFromId);
+  return Math.random() < 0.5 ? cells.reverse() : cells;
 }
 
+// Looks for a cycle along which the current snake can safely continue:
+// body segments must appear behind the head in the same order as in the snake.
 function configureHamiltonianForCurrentSnake() {
   const head = snake[0];
-  const occupiedBody = new Set(snake.slice(1).map(cellKey));
   let fallback = null;
 
-  for (let attempt = 0; attempt < 80; attempt++) {
-    const generatedCycle = createHamiltonianCycle();
-    for (const candidateCycle of [generatedCycle, [...generatedCycle].reverse()]) {
-      const headIndex = candidateCycle.findIndex(cell => cell.x === head.x && cell.y === head.y);
-      if (headIndex < 0) continue;
-      const nextCell = candidateCycle[(headIndex + 1) % candidateCycle.length];
-      const nextDirection = { x: nextCell.x - head.x, y: nextCell.y - head.y };
-      const continuesDirection = nextDirection.x === direction.x && nextDirection.y === direction.y;
-      const bodyAhead = candidateCycle.some((cell, index) => {
-        if (index === headIndex) return false;
-        const distance = (index - headIndex + candidateCycle.length) % candidateCycle.length;
-        return distance < snake.length && occupiedBody.has(cellKey(cell));
+  for (let attempt = 0; attempt < 24; attempt++) {
+    const generated = createHamiltonianCycle();
+    for (const cycle of [generated, generated.slice().reverse()]) {
+      const length = cycle.length;
+      const index = new Int16Array(cellCount);
+      cycle.forEach((cell, i) => {
+        index[idOf(cell)] = i;
       });
-      if (bodyAhead || occupiedBody.has(cellKey(nextCell))) continue;
-      const configured = { cycle: candidateCycle, index: headIndex, continuesDirection };
-      if (continuesDirection) return configured;
-      fallback = fallback || configured;
+      const headIndex = index[idOf(head)];
+
+      let previousBehind = 0;
+      let ordered = true;
+      for (let i = 1; i < snake.length; i++) {
+        const behind = (headIndex - index[idOf(snake[i])] + length) % length;
+        if (behind <= previousBehind) {
+          ordered = false;
+          break;
+        }
+        previousBehind = behind;
+      }
+      if (!ordered) continue;
+
+      const nextCell = cycle[(headIndex + 1) % length];
+      const continuesDirection = nextCell.x - head.x === direction.x && nextCell.y - head.y === direction.y;
+      const candidate = { cycle };
+      if (continuesDirection) return candidate;
+      fallback = fallback || candidate;
     }
   }
 
   return fallback;
 }
 
-function cellKey(cell) {
-  return `${cell.x},${cell.y}`;
-}
+function planHamiltonian() {
+  const length = hamiltonianCycle.length;
+  if (!length) return null;
 
-function createFood() {
-  const freeCells = [];
-  for (let y = 0; y < gridSize; y++) {
-    for (let x = 0; x < gridSize; x++) {
-      if (!snake.some(segment => segment.x === x && segment.y === y)) freeCells.push({ x, y });
+  const head = snake[0];
+  const headIndex = cycleIndexOf[idOf(head)];
+  let target = hamiltonianCycle[(headIndex + 1) % length];
+
+  // Safe shortcut: jump ahead along the cycle toward the food without passing it or the tail.
+  if (food && snake.length < cellCount * shortcutMaxFill) {
+    const tail = snake[snake.length - 1];
+    const tailDistance = (cycleIndexOf[idOf(tail)] - headIndex + length) % length;
+    const foodDistance = (cycleIndexOf[idOf(food)] - headIndex + length) % length;
+    const body = new Set(snake.map(idOf));
+    let best = 1;
+    for (const step of directionList) {
+      const neighbor = { x: head.x + step.x, y: head.y + step.y };
+      if (!isOpenCell(neighbor, body)) continue;
+      const distance = (cycleIndexOf[idOf(neighbor)] - headIndex + length) % length;
+      if (distance > best && distance <= foodDistance && distance < tailDistance - 1) {
+        best = distance;
+        target = neighbor;
+      }
     }
   }
-  return freeCells[Math.floor(Math.random() * freeCells.length)];
+
+  const targetIndex = cycleIndexOf[idOf(target)];
+  const path = [target];
+  const previewLength = Math.min(80, length - 1);
+  for (let offset = 1; offset < previewLength; offset++) {
+    path.push(hamiltonianCycle[(targetIndex + offset) % length]);
+  }
+  return { direction: dirBetween(head, target), path };
 }
 
-function setDirection(newDirection) {
-  if (gameState === 'ready' || gameState === 'over') startGame();
-  if (newDirection.x + direction.x === 0 && newDirection.y + direction.y === 0) return;
-  nextDirection = newDirection;
-  hamiltonianEnabled = false;
-  hamiltonianButton.textContent = 'Hamiltonian cycle';
-  hamiltonianButton.setAttribute('aria-pressed', 'false');
+/* ---------- AI ---------- */
+
+function isMoveSafe(move) {
+  const next = { x: snake[0].x + move.x, y: snake[0].y + move.y };
+  if (next.x < 0 || next.x >= gridSize || next.y < 0 || next.y >= gridSize) return false;
+  const eatsFood = Boolean(food) && next.x === food.x && next.y === food.y;
+  const body = eatsFood ? snake : snake.slice(0, -1);
+  return !body.some(segment => segment.x === next.x && segment.y === next.y);
 }
+
+// Returns { direction, path } — exactly what the AI will do, so the preview is truthful.
+function planAi(allowResync) {
+  if (aiMode === 'ham') {
+    const plan = planHamiltonian();
+    if (plan && isMoveSafe(plan.direction)) return plan;
+    if (allowResync) {
+      const configured = configureHamiltonianForCurrentSnake();
+      if (configured) {
+        applyCycle(configured.cycle);
+        const retry = planHamiltonian();
+        if (retry && isMoveSafe(retry.direction)) return retry;
+      }
+    }
+  }
+  return planRegularAi();
+}
+
+function planRegularAi() {
+  const head = snake[0];
+  const tail = snake[snake.length - 1];
+  const possible = directionList.filter(candidate => !(candidate.x + direction.x === 0 && candidate.y + direction.y === 0));
+  const occupied = new Set(snake.slice(0, -1).map(idOf));
+
+  const foodPath = food ? findPath(head, food, occupied, possible) : null;
+  if (foodPath) {
+    const move = dirBetween(head, foodPath[0]);
+    const projected = projectMove(move);
+    if (projected && canReachTail(projected)) return { direction: move, path: foodPath };
+  }
+
+  const tailPath = findPath(head, tail, occupied, possible);
+  if (tailPath) return { direction: dirBetween(head, tailPath[0]), path: tailPath };
+
+  const options = possible
+    .map(candidate => ({ candidate, projected: projectMove(candidate) }))
+    .filter(option => option.projected)
+    .map(option => ({ ...option, area: countOpenArea(option.projected) }))
+    .sort((left, right) => right.area - left.area);
+
+  if (!options.length) return { direction, path: [] };
+  const choice = options[0].candidate;
+  return { direction: choice, path: [{ x: head.x + choice.x, y: head.y + choice.y }] };
+}
+
+// BFS; returns the list of cells from the first step up to the target, or null.
+function findPath(start, target, blocked, firstDirections) {
+  const startId = idOf(start);
+  const targetId = idOf(target);
+  if (startId === targetId) return null;
+
+  const parents = new Map([[startId, -1]]);
+  const queue = [];
+
+  for (const step of firstDirections) {
+    const next = { x: start.x + step.x, y: start.y + step.y };
+    const id = idOf(next);
+    if (isOpenCell(next, blocked) && !parents.has(id)) {
+      parents.set(id, startId);
+      queue.push(next);
+    }
+  }
+
+  for (let index = 0; index < queue.length; index++) {
+    const current = queue[index];
+    const currentId = idOf(current);
+    if (currentId === targetId) {
+      const path = [];
+      let id = currentId;
+      while (id !== startId) {
+        path.push(cellFromId(id));
+        id = parents.get(id);
+      }
+      return path.reverse();
+    }
+    for (const step of directionList) {
+      const next = { x: current.x + step.x, y: current.y + step.y };
+      const id = idOf(next);
+      if (isOpenCell(next, blocked) && !parents.has(id)) {
+        parents.set(id, currentId);
+        queue.push(next);
+      }
+    }
+  }
+  return null;
+}
+
+function projectMove(candidate) {
+  const nextHead = { x: snake[0].x + candidate.x, y: snake[0].y + candidate.y };
+  const eatsFood = Boolean(food) && nextHead.x === food.x && nextHead.y === food.y;
+  const blocked = new Set((eatsFood ? snake : snake.slice(0, -1)).map(idOf));
+  if (!isOpenCell(nextHead, blocked)) return null;
+  const projected = [nextHead, ...snake];
+  if (!eatsFood) projected.pop();
+  return projected;
+}
+
+function canReachTail(projected) {
+  if (projected.length < 2) return true;
+  const blocked = new Set(projected.slice(0, -1).map(idOf));
+  return Boolean(findPath(projected[0], projected[projected.length - 1], blocked, directionList));
+}
+
+function countOpenArea(projected) {
+  const blocked = new Set(projected.slice(0, -1).map(idOf));
+  const visited = new Set([idOf(projected[0])]);
+  const queue = [projected[0]];
+  for (let index = 0; index < queue.length; index++) {
+    const current = queue[index];
+    for (const step of directionList) {
+      const next = { x: current.x + step.x, y: current.y + step.y };
+      const id = idOf(next);
+      if (isOpenCell(next, blocked) && !visited.has(id)) {
+        visited.add(id);
+        queue.push(next);
+      }
+    }
+  }
+  return visited.size;
+}
+
+/* ---------- input ---------- */
+
+function setDirection(requested) {
+  if (gameState === 'ready' || gameState === 'over') startGame();
+  if (aiMode !== 'off') setAiMode('off');
+
+  // Compare with the last queued move so fast "up, then left" presses are not lost.
+  const reference = inputQueue.length ? inputQueue[inputQueue.length - 1] : direction;
+  if (requested.x === reference.x && requested.y === reference.y) return;
+  if (requested.x + reference.x === 0 && requested.y + reference.y === 0) return;
+  if (inputQueue.length >= maxQueuedInputs) return;
+  inputQueue.push(requested);
+}
+
+function syncAiButtons() {
+  aiButton.textContent = aiMode === 'ai' ? 'AI: On' : 'AI play';
+  aiButton.setAttribute('aria-pressed', String(aiMode === 'ai'));
+  hamiltonianButton.textContent = aiMode === 'ham' ? 'Hamiltonian: On' : 'Hamiltonian cycle';
+  hamiltonianButton.setAttribute('aria-pressed', String(aiMode === 'ham'));
+}
+
+function setAiMode(mode) {
+  aiMode = mode;
+  syncAiButtons();
+
+  if (mode === 'ham') {
+    if (gameState === 'playing' || gameState === 'paused') {
+      const configured = configureHamiltonianForCurrentSnake();
+      if (configured) applyCycle(configured.cycle);
+      else if (!hamiltonianCycle.length) applyCycle(createHamiltonianCycle());
+      draw();
+    } else {
+      restart();
+    }
+    return;
+  }
+
+  if (mode === 'ai' && (gameState === 'ready' || gameState === 'over')) startGame();
+  draw();
+}
+
+function toggleAi() {
+  setAiMode(aiMode === 'ai' ? 'off' : 'ai');
+}
+
+function toggleHamiltonian() {
+  setAiMode(aiMode === 'ham' ? 'off' : 'ham');
+}
+
+/* ---------- game flow ---------- */
 
 function startGame() {
   if (gameState === 'over') resetGame();
   gameState = 'playing';
   message.classList.add('hidden');
   pauseButton.textContent = 'Pause';
+  restartTimer();
+}
+
+function restartTimer() {
   stopGameTimer();
   gameTimer = setInterval(gameLoop, tickDuration);
 }
@@ -174,11 +487,7 @@ function stopGameTimer() {
 }
 
 function togglePause() {
-  if (gameState === 'ready' || gameState === 'over') {
-    startGame();
-    return;
-  }
-  if (gameState === 'paused') {
+  if (gameState === 'ready' || gameState === 'over' || gameState === 'paused') {
     startGame();
     return;
   }
@@ -192,185 +501,57 @@ function showMessage(title, text, buttonText) {
   messageTitle.textContent = title;
   messageText.textContent = text;
   startButton.textContent = buttonText;
-  messageIcon.textContent = gameState === 'over' ? '!' : '+';
   message.classList.remove('hidden');
+  startButton.focus({ preventScroll: true });
 }
 
-function endGame() {
+function finishGame(title, text) {
   gameState = 'over';
   stopGameTimer();
   if (score > bestScore) {
     bestScore = score;
     bestScoreElement.textContent = bestScore;
-    localStorage.setItem('snake-best-score', String(bestScore));
+    saveStored('snake-best-score', bestScore);
   }
-  showMessage('Game over', `You scored ${score}. Ready for another run?`, 'Try again');
+  showMessage(title, text, 'Try again');
+}
+
+function restart() {
+  stopGameTimer();
+  gameState = 'ready';
+  resetGame();
+  if (aiMode !== 'off') {
+    startGame();
+  } else {
+    showMessage('Ready?', 'Use the arrow keys, WASD or swipe to move.', 'Start game');
+  }
 }
 
 function update() {
-  if (aiEnabled) nextDirection = chooseAiDirection();
+  if (aiMode !== 'off') nextDirection = planAi(true).direction;
+  else if (inputQueue.length) nextDirection = inputQueue.shift();
   direction = nextDirection;
+
   const head = { x: snake[0].x + direction.x, y: snake[0].y + direction.y };
   const hitsWall = head.x < 0 || head.x >= gridSize || head.y < 0 || head.y >= gridSize;
-  const eatsFood = head.x === food.x && head.y === food.y;
+  const eatsFood = Boolean(food) && head.x === food.x && head.y === food.y;
   const bodyToCheck = eatsFood ? snake : snake.slice(0, -1);
   const hitsSelf = bodyToCheck.some(segment => segment.x === head.x && segment.y === head.y);
 
   if (hitsWall || hitsSelf) {
-    endGame();
+    finishGame('Game over', `You scored ${score}. Ready for another run?`);
     return;
   }
 
   snake.unshift(head);
-  if (hamiltonianEnabled) hamiltonianIndex = (hamiltonianIndex + 1) % hamiltonianCycle.length;
   if (eatsFood) {
     score += 1;
     scoreElement.textContent = score;
     food = createFood();
+    if (!food) finishGame('You win!', `The whole board is filled. Score: ${score}.`);
   } else {
     snake.pop();
   }
-}
-
-function chooseAiDirection() {
-  if (hamiltonianEnabled) {
-    const nextCell = hamiltonianCycle[(hamiltonianIndex + 1) % hamiltonianCycle.length];
-    return { x: nextCell.x - snake[0].x, y: nextCell.y - snake[0].y };
-  }
-  const possibleDirections = getDirections().filter(candidate =>
-    !(candidate.x + direction.x === 0 && candidate.y + direction.y === 0),
-  );
-  const head = snake[0];
-  const occupied = new Set(snake.slice(0, -1).map(segment => `${segment.x},${segment.y}`));
-  const foodMove = findPathFirstMove(head, food, occupied, possibleDirections);
-
-  if (foodMove) {
-    const projectedSnake = projectMove(foodMove);
-    if (projectedSnake && canReachTail(projectedSnake)) return foodMove;
-  }
-
-  const tail = snake[snake.length - 1];
-  const tailMove = findPathFirstMove(head, tail, occupied, possibleDirections);
-  if (tailMove) return tailMove;
-
-  return possibleDirections
-    .map(candidate => ({ candidate, projectedSnake: projectMove(candidate) }))
-    .filter(result => result.projectedSnake)
-    .sort((left, right) => countOpenArea(right.projectedSnake) - countOpenArea(left.projectedSnake))[0]?.candidate || direction;
-}
-
-function getDirections() {
-  return [
-    { x: 0, y: -1 },
-    { x: 1, y: 0 },
-    { x: 0, y: 1 },
-    { x: -1, y: 0 },
-  ];
-}
-
-function findPathFirstMove(start, target, blocked, firstDirections) {
-  if (start.x === target.x && start.y === target.y) return null;
-  const queue = [];
-  const visited = new Set([`${start.x},${start.y}`]);
-
-  firstDirections.forEach(candidate => {
-    const next = { x: start.x + candidate.x, y: start.y + candidate.y };
-    const key = `${next.x},${next.y}`;
-    if (isOpenCell(next, blocked) && !visited.has(key)) {
-      visited.add(key);
-      queue.push({ position: next, firstMove: candidate });
-    }
-  });
-
-  while (queue.length) {
-    const current = queue.shift();
-    if (current.position.x === target.x && current.position.y === target.y) return current.firstMove;
-    getDirections().forEach(candidate => {
-      const next = {
-        x: current.position.x + candidate.x,
-        y: current.position.y + candidate.y,
-      };
-      const key = `${next.x},${next.y}`;
-      if (isOpenCell(next, blocked) && !visited.has(key)) {
-        visited.add(key);
-        queue.push({ position: next, firstMove: current.firstMove });
-      }
-    });
-  }
-  return null;
-}
-
-function projectMove(candidate) {
-  const nextHead = { x: snake[0].x + candidate.x, y: snake[0].y + candidate.y };
-  const eatsFood = nextHead.x === food.x && nextHead.y === food.y;
-  const blocked = new Set((eatsFood ? snake : snake.slice(0, -1)).map(segment => `${segment.x},${segment.y}`));
-  if (!isOpenCell(nextHead, blocked)) return null;
-  const projectedSnake = [nextHead, ...snake];
-  if (!eatsFood) projectedSnake.pop();
-  return projectedSnake;
-}
-
-function canReachTail(projectedSnake) {
-  if (projectedSnake.length < 2) return true;
-  const blocked = new Set(projectedSnake.slice(0, -1).map(segment => `${segment.x},${segment.y}`));
-  return Boolean(findPathFirstMove(projectedSnake[0], projectedSnake[projectedSnake.length - 1], blocked, getDirections()));
-}
-
-function countOpenArea(projectedSnake) {
-  const blocked = new Set(projectedSnake.slice(0, -1).map(segment => `${segment.x},${segment.y}`));
-  const queue = [projectedSnake[0]];
-  const visited = new Set([`${projectedSnake[0].x},${projectedSnake[0].y}`]);
-  while (queue.length) {
-    const current = queue.shift();
-    getDirections().forEach(candidate => {
-      const next = { x: current.x + candidate.x, y: current.y + candidate.y };
-      const key = `${next.x},${next.y}`;
-      if (isOpenCell(next, blocked) && !visited.has(key)) {
-        visited.add(key);
-        queue.push(next);
-      }
-    });
-  }
-  return visited.size;
-}
-
-function isOpenCell(cell, occupied) {
-  return cell.x >= 0 && cell.x < gridSize && cell.y >= 0 && cell.y < gridSize && !occupied.has(`${cell.x},${cell.y}`);
-}
-
-function findAiPath() {
-  if (hamiltonianEnabled && hamiltonianCycle.length) {
-    return Array.from({ length: Math.min(80, hamiltonianCycle.length - 1) }, (_, offset) =>
-      hamiltonianCycle[(hamiltonianIndex + offset + 1) % hamiltonianCycle.length],
-    );
-  }
-  if (!food) return [];
-  const start = snake[0];
-  const blocked = new Set(snake.slice(0, -1).map(cellKey));
-  const queue = [start];
-  const parents = new Map([[cellKey(start), null]]);
-  while (queue.length) {
-    const current = queue.shift();
-    if (current.x === food.x && current.y === food.y) {
-      const path = [];
-      let key = cellKey(current);
-      while (key && key !== cellKey(start)) {
-        const cell = key.split(',').map(Number);
-        path.unshift({ x: cell[0], y: cell[1] });
-        key = parents.get(key);
-      }
-      return path;
-    }
-    getDirections().forEach(candidate => {
-      const next = { x: current.x + candidate.x, y: current.y + candidate.y };
-      const key = cellKey(next);
-      if (isOpenCell(next, blocked) && !parents.has(key)) {
-        parents.set(key, cellKey(current));
-        queue.push(next);
-      }
-    });
-  }
-  return [];
 }
 
 function gameLoop() {
@@ -378,6 +559,8 @@ function gameLoop() {
   update();
   draw();
 }
+
+/* ---------- rendering ---------- */
 
 function draw() {
   context.fillStyle = '#0b0e0b';
@@ -394,16 +577,18 @@ function draw() {
     context.stroke();
   }
 
-  context.fillStyle = '#ff8a4c';
-  context.shadowColor = '#ff8a4c';
-  context.shadowBlur = 12;
-  context.beginPath();
-  context.arc(food.x * cellSize + cellSize / 2, food.y * cellSize + cellSize / 2, cellSize * .28, 0, Math.PI * 2);
-  context.fill();
-  context.shadowBlur = 0;
+  if (food) {
+    context.fillStyle = '#ff8a4c';
+    context.shadowColor = '#ff8a4c';
+    context.shadowBlur = 12;
+    context.beginPath();
+    context.arc(food.x * cellSize + cellSize / 2, food.y * cellSize + cellSize / 2, cellSize * 0.28, 0, Math.PI * 2);
+    context.fill();
+    context.shadowBlur = 0;
+  }
 
-  if (aiPreviewEnabled && aiEnabled) {
-    const path = findAiPath();
+  if (aiPreviewEnabled && aiMode !== 'off' && food && gameState !== 'over') {
+    const { path } = planAi(false);
     context.strokeStyle = 'rgba(112, 225, 195, .72)';
     context.lineWidth = 2;
     context.setLineDash([4, 4]);
@@ -421,76 +606,43 @@ function draw() {
   });
 }
 
-function restart() {
-  stopGameTimer();
-  resetGame();
-  if (aiEnabled) {
-    startGame();
-  } else {
-    gameState = 'ready';
-    showMessage('Ready?', 'Use the arrow keys or WASD to move.', 'Start game');
-  }
-}
-
-function toggleAi() {
-  const wasHamiltonianEnabled = hamiltonianEnabled;
-  hamiltonianEnabled = false;
-  hamiltonianButton.textContent = 'Hamiltonian cycle';
-  hamiltonianButton.setAttribute('aria-pressed', 'false');
-  aiEnabled = wasHamiltonianEnabled ? true : !aiEnabled;
-  aiButton.textContent = aiEnabled ? 'AI: On' : 'AI play';
-  aiButton.setAttribute('aria-pressed', String(aiEnabled));
-  if (aiEnabled && (gameState === 'ready' || gameState === 'over')) startGame();
-}
-
-function toggleHamiltonian() {
-  hamiltonianEnabled = !hamiltonianEnabled;
-  aiEnabled = hamiltonianEnabled;
-  hamiltonianButton.textContent = hamiltonianEnabled ? 'Hamiltonian: On' : 'Hamiltonian cycle';
-  hamiltonianButton.setAttribute('aria-pressed', String(hamiltonianEnabled));
-  aiButton.textContent = 'AI play';
-  aiButton.setAttribute('aria-pressed', 'false');
-  if (!hamiltonianEnabled) {
-    stopGameTimer();
-    if (gameState === 'playing') startGame();
-    return;
-  }
-
-  if (gameState === 'playing' || gameState === 'paused') {
-    const configured = configureHamiltonianForCurrentSnake();
-    if (configured) {
-      hamiltonianCycle = configured.cycle;
-      hamiltonianIndex = configured.index;
-    }
-    if (gameState === 'playing') startGame();
-    return;
-  }
-
-  restart();
-}
-
-const directions = {
-  ArrowUp: { x: 0, y: -1 },
-  w: { x: 0, y: -1 },
-  ArrowDown: { x: 0, y: 1 },
-  s: { x: 0, y: 1 },
-  ArrowLeft: { x: -1, y: 0 },
-  a: { x: -1, y: 0 },
-  ArrowRight: { x: 1, y: 0 },
-  d: { x: 1, y: 0 },
-};
+/* ---------- events ---------- */
 
 document.addEventListener('keydown', event => {
-  if (event.key === ' ' || event.key === 'p') {
+  if (event.ctrlKey || event.metaKey || event.altKey) return;
+  if (event.target instanceof Element && event.target.closest('input')) return;
+
+  if (event.code === 'Space' || event.code === 'KeyP') {
     event.preventDefault();
-    togglePause();
+    if (!event.repeat) togglePause();
     return;
   }
-  const newDirection = directions[event.key];
-  if (newDirection) {
+
+  const requested = keyDirections[event.code];
+  if (requested) {
     event.preventDefault();
-    setDirection(newDirection);
+    setDirection(requested);
   }
+});
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden && gameState === 'playing') togglePause();
+});
+
+let touchStart = null;
+boardFrame.addEventListener('touchstart', event => {
+  const touch = event.changedTouches[0];
+  touchStart = { x: touch.clientX, y: touch.clientY };
+}, { passive: true });
+boardFrame.addEventListener('touchend', event => {
+  if (!touchStart) return;
+  const touch = event.changedTouches[0];
+  const dx = touch.clientX - touchStart.x;
+  const dy = touch.clientY - touchStart.y;
+  touchStart = null;
+  if (Math.max(Math.abs(dx), Math.abs(dy)) < swipeThreshold) return;
+  if (Math.abs(dx) > Math.abs(dy)) setDirection(dx > 0 ? DIRS.right : DIRS.left);
+  else setDirection(dy > 0 ? DIRS.down : DIRS.up);
 });
 
 startButton.addEventListener('click', startGame);
@@ -498,14 +650,25 @@ pauseButton.addEventListener('click', togglePause);
 restartButton.addEventListener('click', restart);
 aiButton.addEventListener('click', toggleAi);
 hamiltonianButton.addEventListener('click', toggleHamiltonian);
+
 aiPreviewToggle.addEventListener('change', () => {
   aiPreviewEnabled = aiPreviewToggle.checked;
-  localStorage.setItem('snake-ai-preview', String(aiPreviewEnabled));
+  saveStored('snake-ai-preview', aiPreviewEnabled);
   draw();
 });
-document.querySelectorAll('[data-direction]').forEach(button => {
-  button.addEventListener('click', () => setDirection(directions[button.dataset.direction === 'up' ? 'ArrowUp' : button.dataset.direction === 'down' ? 'ArrowDown' : button.dataset.direction === 'left' ? 'ArrowLeft' : 'ArrowRight']));
+
+speedRange.addEventListener('input', () => {
+  speedLevel = Number(speedRange.value);
+  tickDuration = speedLevels[speedLevel - 1];
+  speedValue.value = `${speedLevel} / ${speedLevels.length}`;
+  saveStored('snake-speed', speedLevel);
+  if (gameState === 'playing') restartTimer();
 });
 
+document.querySelectorAll('[data-direction]').forEach(button => {
+  button.addEventListener('click', () => setDirection(DIRS[button.dataset.direction]));
+});
+
+syncAiButtons();
 resetGame();
-showMessage('Ready?', 'Use the arrow keys or WASD to move.', 'Start game');
+showMessage('Ready?', 'Use the arrow keys, WASD or swipe to move.', 'Start game');

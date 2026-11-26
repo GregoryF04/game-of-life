@@ -31,7 +31,48 @@
       </div>
     </header>
 
-    <div class="layout">
+    <nav class="tabs" role="tablist" aria-label="Разделы">
+      <button type="button" role="tab" data-tab="builder" id="tabBtnBuilder">Персонаж</button>
+      <button type="button" role="tab" data-tab="spells" id="tabBtnSpells">Заклинания <span id="tabSpellCount" class="tabBadge"></span></button>
+    </nav>
+
+    <section id="spellsTab" class="spellsTab" role="tabpanel" aria-labelledby="tabBtnSpells" hidden>
+      <aside class="panel spellFilters" aria-label="Фильтры заклинаний">
+        <h2>Фильтры</h2>
+        <label>Название <input id="spellSearch" type="search" placeholder="Например, огненный шар или fireball"></label>
+        <div class="choiceGroup"><div class="choiceTitle">Уровень</div><div class="chips" id="filterLevels"></div></div>
+        <div class="choiceGroup"><div class="choiceTitle">Школа</div><div class="chips" id="filterSchools"></div></div>
+        <div class="choiceGroup" id="filterConcGroup">
+          <div class="choiceTitle">Концентрация</div>
+          <div class="chips">
+            <label><input type="radio" name="filterConc" value="any" checked> Любые</label>
+            <label><input type="radio" name="filterConc" value="yes"> Только</label>
+            <label><input type="radio" name="filterConc" value="no"> Без</label>
+          </div>
+        </div>
+        <div class="choiceGroup">
+          <div class="choiceTitle">Прочее</div>
+          <div class="filterChecks">
+            <label class="check" id="filterRitualRow"><input type="checkbox" id="filterRitual"> Только ритуалы</label>
+            <label class="check"><input type="checkbox" id="filterNoV"> Без вербального (В)</label>
+            <label class="check"><input type="checkbox" id="filterNoS"> Без соматического (С)</label>
+            <label class="check"><input type="checkbox" id="filterNoM"> Без материального (М)</label>
+            <label class="check"><input type="checkbox" id="filterChosen"> Только выбранные</label>
+            <label class="check"><input type="checkbox" id="filterAvailable" checked> Только доступные по уровню</label>
+          </div>
+        </div>
+        <button type="button" id="filterReset">Сбросить фильтры</button>
+      </aside>
+      <div class="panel spellBrowser">
+        <div class="spellBrowserHead">
+          <h2>Заклинания класса</h2>
+          <p id="spellCounts" class="hint"></p>
+        </div>
+        <div id="spellBrowserBody"></div>
+      </div>
+    </section>
+
+    <div class="layout" id="builderTab" role="tabpanel" aria-labelledby="tabBtnBuilder">
       <form id="builder" class="builder" autocomplete="off" onsubmit="return false">
         <section class="panel">
           <h2>Основное</h2>
@@ -101,9 +142,8 @@
 
         <section class="panel" id="spellPanel" hidden>
           <h2>Заклинания</h2>
-          <p id="spellCounts" class="hint"></p>
-          <input id="spellFilter" type="search" placeholder="Поиск заклинания…">
-          <div id="spellPicker" class="spellPicker"></div>
+          <p id="spellSummary" class="hint"></p>
+          <button type="button" data-tab="spells">Выбрать заклинания →</button>
         </section>
 
         <section class="panel">

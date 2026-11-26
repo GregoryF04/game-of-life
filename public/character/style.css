@@ -151,12 +151,47 @@ button:hover, .fileBtn:hover { border-color: var(--site-accent); color: var(--si
 .featSlot .bonusPicks { display: grid; gap: 6px; margin-top: 6px; }
 .featSlot .bonusPicks select { padding: 5px 7px; font-size: 12px; }
 
-.spellPicker { max-height: 420px; overflow-y: auto; margin-top: 8px; scrollbar-width: thin; }
-.spellPicker h3 { position: sticky; top: 0; margin: 0; padding: 6px 0; background: var(--site-panel-solid); }
-.spellRow { display: flex; align-items: center; gap: 7px; padding: 3px 0; font-size: 13px; }
-.spellRow input { margin: 0; }
-.spellRow .meta { margin-left: auto; color: var(--site-muted); font-size: 11px; white-space: nowrap; }
-.spellRow.disabled { opacity: .45; }
+/* ---- Tabs ---- */
+.tabs { display: flex; gap: 6px; margin-bottom: 14px; border-bottom: 1px solid var(--site-line); }
+.tabs button {
+  margin-bottom: -1px;
+  padding: 9px 16px;
+  border: 1px solid transparent;
+  border-radius: 8px 8px 0 0;
+  background: none;
+  color: var(--site-muted);
+  font-size: 14px;
+}
+.tabs button[aria-selected="true"] {
+  border-color: var(--site-line);
+  border-bottom-color: var(--site-bg);
+  background: var(--site-panel);
+  color: var(--site-accent-strong);
+}
+.tabBadge:not(:empty) {
+  display: inline-block; min-width: 20px; margin-left: 4px; padding: 0 6px;
+  border-radius: 999px; background: rgba(112, 225, 195, .15); color: var(--site-accent); font-size: 11px;
+}
+
+/* ---- Spells tab ---- */
+.spellsTab { display: grid; grid-template-columns: minmax(240px, 300px) minmax(0, 1fr); gap: 18px; align-items: start; }
+.spellFilters { position: sticky; top: 12px; max-height: calc(100vh - 24px); overflow-y: auto; scrollbar-width: thin; }
+.spellFilters .chips label { font-size: 12px; }
+.filterChecks { display: grid; gap: 6px; }
+.panel .filterChecks label.check { margin: 0; font-size: 12px; }
+.spellBrowserHead { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 16px; }
+.spellBrowserHead h2 { margin: 0; }
+.spellBrowserHead .hint { margin: 0; }
+.spellBrowserHead .hint b { color: var(--site-ink); }
+.spellTableWrap { overflow-x: auto; }
+.spellList td { vertical-align: top; }
+.spellList td:first-child { width: 28px; }
+.spellList input { margin: 2px 0 0; }
+.spellList .eng { color: var(--site-muted); font-size: 11px; }
+.spellList .tag { margin-left: 4px; }
+.spellList .levelRow th { padding-top: 14px; color: var(--site-accent); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+.spellList tr.chosen td { background: rgba(112, 225, 195, .07); }
+.spellList tr.disabled td { opacity: .5; }
 
 .linkish {
   padding: 0;
@@ -269,6 +304,8 @@ button:hover, .fileBtn:hover { border-color: var(--site-accent); color: var(--si
 @media (max-width: 960px) {
   .layout { grid-template-columns: 1fr; }
   .builder { position: static; max-height: none; overflow: visible; }
+  .spellsTab { grid-template-columns: 1fr; }
+  .spellFilters { position: static; max-height: none; }
 }
 @media (max-width: 640px) {
   .sheet { padding: 14px; }
@@ -280,9 +317,9 @@ button:hover, .fileBtn:hover { border-color: var(--site-accent); color: var(--si
 @media print {
   body, html { background: #fff !important; color: #000 !important; }
   body::before { display: none; }
-  .siteNav, .appHeader, .builder { display: none !important; }
+  .siteNav, .appHeader, .builder, .tabs, .spellsTab { display: none !important; }
   .app { width: 100%; padding: 0; }
-  .layout { display: block; }
+  .layout, .layout[hidden] { display: block !important; } /* print the sheet from either tab */
   .sheet, .box, .ability, .stat, .fact, .slot { background: #fff !important; box-shadow: none !important; border-color: #888 !important; color: #000 !important; }
   .sheet * { color: #000 !important; }
   .feature .rich { display: none; }

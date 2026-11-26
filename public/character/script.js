@@ -773,7 +773,12 @@
     eyebrow: $('editionEyebrow'),
     background: $('backgroundSelect'), backgroundBonus: $('backgroundBonus'),
     abilityInputs: $('abilityInputs'), abilityHint: $('abilityHint'), featSlots: $('featSlots'),
-    spellPanel: $('spellPanel'), spellCounts: $('spellCounts'), spellFilter: $('spellFilter'), spellPicker: $('spellPicker'),
+    spellPanel: $('spellPanel'), spellSummary: $('spellSummary'), spellCounts: $('spellCounts'),
+    spellsTab: $('spellsTab'), builderTab: $('builderTab'), tabBtnSpells: $('tabBtnSpells'), tabBtnBuilder: $('tabBtnBuilder'),
+    tabSpellCount: $('tabSpellCount'), spellBrowserBody: $('spellBrowserBody'), spellSearch: $('spellSearch'),
+    filterLevels: $('filterLevels'), filterSchools: $('filterSchools'), filterConcGroup: $('filterConcGroup'),
+    filterRitualRow: $('filterRitualRow'), filterRitual: $('filterRitual'), filterNoV: $('filterNoV'), filterNoS: $('filterNoS'),
+    filterNoM: $('filterNoM'), filterChosen: $('filterChosen'), filterAvailable: $('filterAvailable'),
     armor: $('armorSelect'), shield: $('shieldInput'), equipment: $('equipmentChoices'),
     languages: $('languagesInput'), notes: $('notesInput'), sheet: $('sheet'),
     dialog: $('detailDialog'), dialogBody: $('detailBody'),
@@ -954,7 +959,7 @@
     el.abilityHint.innerHTML = hint;
 
     renderFeatSlots(c);
-    renderSpellPicker(c);
+    renderSpells(c);
     renderEquipmentChoices();
   }
 
@@ -1000,39 +1005,149 @@
     });
   }
 
-  function renderSpellPicker(c) {
+  // ---------- spells tab ----------
+
+  const defaultSpellFilter = () => ({
+    search: '', levels: new Set(), schools: new Set(), conc: 'any', ritual: false,
+    noV: false, noS: false, noM: false, chosen: false, available: true,
+  });
+  let spellFilter = defaultSpellFilter();
+  let lastComputed = null;
+
+  const levelName = lvl => (lvl === 0 ? 'Заговоры' : `${lvl} уровень`);
+
+  function spellMatches(x, sp) {
+    const f = spellFilter;
+    const chosen = state.spells.includes(x.url);
+    if (!isAllowed(x) && !chosen) return false;
+    if (x.level === 0 && !sp.cantripLimit && !chosen) return false; // class has no cantrips
+    if (f.available && x.level > sp.maxLevel && !chosen) return false;
+    if (f.chosen && !chosen) return false;
+    if (f.levels.size && !f.levels.has(x.level)) return false;
+    if (f.schools.size && !f.schools.has(x.school)) return false;
+    if (f.conc === 'yes' && !x.concentration) return false;
+    if (f.conc === 'no' && x.concentration) return false;
+    if (f.ritual && !x.ritual) return false;
+    const comp = x.components || {};
+    if ((f.noV && comp.v) || (f.noS && comp.s) || (f.noM && comp.m)) return false;
+    if (f.search) {
+      const q = f.search.toLowerCase();
+      if (!rus(x).toLowerCase().includes(q) && !(x.name?.eng || '').toLowerCase().includes(q)) return false;
+    }
+    return true;
+  }
+
+  function spellCountsHtml(sp) {
+    const parts = [];
+    if (sp.cantripLimit) parts.push(`Заговоры: <b>${sp.cantrips.length} / ${sp.cantripLimit}</b>`);
+    parts.push(sp.preparedLimit != null
+      ? `${sp.limitLabel}: <b>${sp.leveled.length} / ${sp.preparedLimit}</b>`
+      : `${sp.limitLabel}: <b>${sp.leveled.length}</b>`);
+    parts.push(`макс. уровень: <b>${sp.maxLevel}</b>`);
+    const over = sp.cantrips.length > sp.cantripLimit || (sp.preparedLimit != null && sp.leveled.length > sp.preparedLimit);
+    return parts.join(' · ') + (over ? ' <span class="warn">— больше лимита, снимите лишние.</span>' : '');
+  }
+
+  function renderSpells(c) {
+    lastComputed = c;
     const sp = c.spell;
     el.spellPanel.hidden = !sp;
-    if (!sp) return;
-    const filter = el.spellFilter.value.trim().toLowerCase();
-    renderSection('spells', `${data.spellsKey}|${sp.maxLevel}|${sp.cantripLimit}|${filter}|${sourcesKey()}`, () => {
-      const groups = [];
-      for (let lvl = sp.cantripLimit ? 0 : 1; lvl <= sp.maxLevel; lvl++) {
-        const items = data.spells.filter(x => x.level === lvl
-          && isAllowed(x)
-          && (!filter || rus(x).toLowerCase().includes(filter) || (x.name?.eng || '').toLowerCase().includes(filter)));
-        if (!items.length) continue;
-        groups.push(`<h3>${lvl === 0 ? 'Заговоры' : `${lvl} уровень`}</h3>${items.map(x => `
-          <label class="spellRow"><input type="checkbox" data-spell="${esc(x.url)}" data-level="${x.level}">
-            <button type="button" class="linkish" data-spell-info="${esc(x.url)}">${esc(rus(x))}</button>
-            <span class="meta">${esc(x.school || '')}${x.concentration ? ' · К' : ''}${x.ritual ? ' · Р' : ''}</span></label>`).join('')}`);
-      }
-      el.spellPicker.innerHTML = groups.join('') || '<p class="hint">Заклинания не найдены.</p>';
+    el.tabSpellCount.textContent = sp ? String(sp.cantrips.length + sp.leveled.length) : '';
+
+    if (!sp) {
+      const eff = data.eff;
+      const startsLater = eff && isCasterType(eff.casterType) && state.level < (eff.spellcastingStartLevel || 1);
+      el.spellCounts.innerHTML = '';
+      el.spellBrowserBody.innerHTML = `<p class="sheetEmpty">${
+        !data.cls ? 'Выберите класс на вкладке «Персонаж».'
+          : startsLater ? `Заклинания появятся с ${eff.spellcastingStartLevel} уровня.`
+            : data.subclasses.length && !data.subclass ? 'Этот класс не использует заклинания (некоторые подклассы — используют).'
+              : 'Этот персонаж не использует заклинания.'}</p>`;
+      rendered.spellRows = '';
+      return;
+    }
+
+    const summary = spellCountsHtml(sp);
+    el.spellSummary.innerHTML = summary;
+    el.spellCounts.innerHTML = summary;
+
+    // Filter chips depend on the spell list (edition, class, books).
+    const pool = data.spells.filter(x => isAllowed(x) || state.spells.includes(x.url));
+    renderSection('spellChips', `${data.spellsKey}|${sourcesKey()}`, () => {
+      const levels = [...new Set(pool.map(x => x.level))].sort((a, b) => a - b);
+      const schools = [...new Set(pool.map(x => x.school).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ru'));
+      el.filterLevels.innerHTML = levels.map(l => `<label><input type="checkbox" data-filter-level="${l}"${spellFilter.levels.has(l) ? ' checked' : ''}> ${l === 0 ? 'Заговор' : l}</label>`).join('');
+      el.filterSchools.innerHTML = schools.map(s => `<label><input type="checkbox" data-filter-school="${esc(s)}"${spellFilter.schools.has(s) ? ' checked' : ''}> ${esc(s)}</label>`).join('');
+      // The 2014 list data has no concentration/ritual flags; hide filters it cannot answer.
+      el.filterConcGroup.hidden = !pool.some(x => x.concentration);
+      el.filterRitualRow.hidden = !pool.some(x => x.ritual);
     });
+
+    const f = spellFilter;
+    const filterKey = JSON.stringify([f.search, [...f.levels], [...f.schools], f.conc, f.ritual, f.noV, f.noS, f.noM, f.available,
+      f.chosen ? state.spells : null]);
+    renderSection('spellRows', `${data.spellsKey}|${sp.maxLevel}|${sp.cantripLimit}|${sourcesKey()}|${filterKey}`, () => {
+      const items = data.spells.filter(x => spellMatches(x, sp));
+      const byLevel = new Map();
+      for (const x of items) {
+        if (!byLevel.has(x.level)) byLevel.set(x.level, []);
+        byLevel.get(x.level).push(x);
+      }
+      const comps = x => ['v', 's', 'm'].filter(k => x.components?.[k]).map(k => ({ v: 'В', s: 'С', m: 'М' })[k]).join(', ');
+      el.spellBrowserBody.innerHTML = items.length ? `<p class="hint">Найдено: ${items.length}</p><div class="spellTableWrap"><table class="spellTable spellList">
+        <thead><tr><th></th><th>Название</th><th>Школа</th><th>Компоненты</th><th>Книга</th></tr></thead>
+        ${[...byLevel.keys()].sort((a, b) => a - b).map(lvl => `<tbody>
+          <tr class="levelRow"><th colspan="5">${levelName(lvl)}${lvl > sp.maxLevel ? ' <span class="muted">— пока недоступно</span>' : ''}</th></tr>
+          ${byLevel.get(lvl).map(x => `<tr data-row="${esc(x.url)}">
+            <td><input type="checkbox" data-spell="${esc(x.url)}" data-level="${x.level}" aria-label="${esc(rus(x))}"></td>
+            <td><button type="button" class="linkish" data-spell-info="${esc(x.url)}">${esc(rus(x))}</button>
+              ${x.concentration ? '<span class="tag" title="Концентрация">К</span>' : ''}${x.ritual ? '<span class="tag" title="Ритуал">Р</span>' : ''}
+              ${x.name?.eng ? `<div class="eng">${esc(x.name.eng)}</div>` : ''}</td>
+            <td>${esc(x.school || '')}</td>
+            <td>${comps(x)}</td>
+            <td class="muted">${esc(x.source?.name?.label || '')}</td>
+          </tr>`).join('')}</tbody>`).join('')}
+      </table></div>` : '<p class="sheetEmpty">Ничего не найдено — измените фильтры.</p>';
+    });
+
+    // Checkbox state changes with every pick, without rebuilding the table.
     const cantripsFull = sp.cantrips.length >= sp.cantripLimit;
     const preparedFull = sp.preparedLimit != null && sp.leveled.length >= sp.preparedLimit;
-    el.spellPicker.querySelectorAll('[data-spell]').forEach(box => {
+    el.spellBrowserBody.querySelectorAll('[data-spell]').forEach(box => {
+      const level = Number(box.dataset.level);
       box.checked = state.spells.includes(box.dataset.spell);
-      const full = box.dataset.level === '0' ? cantripsFull : preparedFull;
-      box.disabled = !box.checked && full;
-      box.closest('.spellRow').classList.toggle('disabled', box.disabled);
+      const full = level === 0 ? cantripsFull : preparedFull;
+      const tooHigh = level > sp.maxLevel;
+      box.disabled = !box.checked && (full || tooHigh);
+      box.title = tooHigh ? 'Недоступно на текущем уровне' : full && !box.checked ? 'Достигнут лимит' : '';
+      box.closest('tr').classList.toggle('chosen', box.checked);
+      box.closest('tr').classList.toggle('disabled', box.disabled);
     });
-    const parts = [];
-    if (sp.cantripLimit) parts.push(`Заговоры: ${sp.cantrips.length} / ${sp.cantripLimit}`);
-    parts.push(sp.preparedLimit != null ? `${sp.limitLabel}: ${sp.leveled.length} / ${sp.preparedLimit}` : `${sp.limitLabel}: ${sp.leveled.length}`);
-    parts.push(`макс. уровень заклинаний: ${sp.maxLevel}`);
-    const over = sp.cantrips.length > sp.cantripLimit || (sp.preparedLimit != null && sp.leveled.length > sp.preparedLimit);
-    el.spellCounts.innerHTML = parts.join(' · ') + (over ? ' <span class="warn">— больше лимита, снимите лишние.</span>' : '');
+  }
+
+  function syncSpellFilterInputs() {
+    el.spellSearch.value = spellFilter.search;
+    document.querySelectorAll('input[name="filterConc"]').forEach(r => { r.checked = r.value === spellFilter.conc; });
+    el.filterRitual.checked = spellFilter.ritual;
+    el.filterNoV.checked = spellFilter.noV;
+    el.filterNoS.checked = spellFilter.noS;
+    el.filterNoM.checked = spellFilter.noM;
+    el.filterChosen.checked = spellFilter.chosen;
+    el.filterAvailable.checked = spellFilter.available;
+    rendered.spellChips = '';
+  }
+
+  // ---------- tabs ----------
+
+  const TAB_KEY = 'mg-dnd-tab';
+  function setTab(name, { scroll = false } = {}) {
+    const spells = name === 'spells';
+    el.spellsTab.hidden = !spells;
+    el.builderTab.hidden = spells;
+    el.tabBtnSpells.setAttribute('aria-selected', String(spells));
+    el.tabBtnBuilder.setAttribute('aria-selected', String(!spells));
+    try { localStorage.setItem(TAB_KEY, name); } catch { /* storage blocked */ }
+    if (scroll) el.tabBtnBuilder.scrollIntoView({ block: 'nearest' });
   }
 
   function renderEquipmentChoices() {
@@ -1363,7 +1478,39 @@
   el.shield.addEventListener('change', () => setAndUpdate({ shield: el.shield.checked }));
   el.languages.addEventListener('change', () => setAndUpdate({ languages: el.languages.value }));
   el.notes.addEventListener('change', () => setAndUpdate({ notes: el.notes.value }));
-  el.spellFilter.addEventListener('input', () => update());
+  // Spells tab: filters re-render from the last computed sheet; picks go through update().
+  const rerenderSpells = () => { if (lastComputed) renderSpells(lastComputed); };
+  el.spellSearch.addEventListener('input', () => { spellFilter.search = el.spellSearch.value.trim(); rerenderSpells(); });
+  el.spellsTab.addEventListener('change', event => {
+    const t = event.target;
+    if (t.dataset.spell) {
+      const set = new Set(state.spells);
+      t.checked ? set.add(t.dataset.spell) : set.delete(t.dataset.spell);
+      return setAndUpdate({ spells: [...set] });
+    }
+    if (t.dataset.filterLevel != null) {
+      const lvl = Number(t.dataset.filterLevel);
+      t.checked ? spellFilter.levels.add(lvl) : spellFilter.levels.delete(lvl);
+    } else if (t.dataset.filterSchool != null) {
+      t.checked ? spellFilter.schools.add(t.dataset.filterSchool) : spellFilter.schools.delete(t.dataset.filterSchool);
+    } else if (t.name === 'filterConc') {
+      spellFilter.conc = t.value;
+    } else {
+      const flags = { filterRitual: 'ritual', filterNoV: 'noV', filterNoS: 'noS', filterNoM: 'noM', filterChosen: 'chosen', filterAvailable: 'available' };
+      if (!flags[t.id]) return;
+      spellFilter[flags[t.id]] = t.checked;
+    }
+    rerenderSpells();
+  });
+  $('filterReset').addEventListener('click', () => {
+    spellFilter = defaultSpellFilter();
+    syncSpellFilterInputs();
+    rerenderSpells();
+  });
+  document.addEventListener('click', event => {
+    const btn = event.target.closest('[data-tab]');
+    if (btn) setTab(btn.dataset.tab, { scroll: true });
+  });
 
   document.getElementById('builder').addEventListener('change', event => {
     const t = event.target;
@@ -1543,7 +1690,8 @@
       background: null, feats: {}, featLists: { general: [], epic: [] }, spells: [], spellsKey: '',
     });
     Object.keys(rendered).forEach(k => delete rendered[k]);
-    el.spellFilter.value = '';
+    spellFilter = defaultSpellFilter();
+    syncSpellFilterInputs();
     setStatus('Загрузка…');
     syncStaticInputs();
     await loadEditionLists();
@@ -1557,6 +1705,9 @@
   async function init() {
     el.armor.innerHTML = ARMORS.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
     syncStaticInputs();
+    let tab = 'builder';
+    try { tab = localStorage.getItem(TAB_KEY) === 'spells' ? 'spells' : 'builder'; } catch { /* storage blocked */ }
+    setTab(tab);
     // Damage/condition names are the same in both editions; take them from the core-api.
     const [damage, conditions] = await Promise.all([
       fetchJson('/api/dnd/dictionaries/damage/types', () => coreDirect('dictionaries/damage/types')).catch(() => []),

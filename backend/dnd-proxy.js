@@ -10,11 +10,64 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const https = require('https');
+const http = require('http');
 
 const FRESH_MS = 12 * 60 * 60 * 1000;     // serve from cache without revalidating
-const UPSTREAM_TIMEOUT_MS = 15_000;
+const ATTEMPT_TIMEOUT_MS = 10_000;
+const ATTEMPTS = 3;
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
 const MEMORY_ENTRIES = 150;
+
+// From the production host, some upstream requests stall until timed out while an
+// identical retry succeeds. Use a fresh connection per request (no keep-alive pool that
+// can hand out a silently dropped socket) and retry stalled attempts.
+function requestOnce({ url, method, body }) {
+  return new Promise((resolve, reject) => {
+    const target = new URL(url);
+    const lib = target.protocol === 'http:' ? http : https;
+    const payload = body ? JSON.stringify(body) : null;
+    const headers = { accept: 'application/json', 'user-agent': 'mini-games-character-builder/1.0', connection: 'close' };
+    if (payload) {
+      headers['content-type'] = 'application/json';
+      headers['content-length'] = Buffer.byteLength(payload);
+    }
+    const req = lib.request(target, { method, headers, agent: false, timeout: ATTEMPT_TIMEOUT_MS }, res => {
+      const chunks = [];
+      let size = 0;
+      res.on('data', chunk => {
+        size += chunk.length;
+        if (size > MAX_BODY_BYTES) req.destroy(new Error('Upstream response too large'));
+        else chunks.push(chunk);
+      });
+      res.on('end', () => resolve({ status: res.statusCode, text: Buffer.concat(chunks).toString('utf8') }));
+      res.on('error', reject);
+    });
+    // Covers both a slow connect and a response that stops arriving mid-way.
+    const deadline = setTimeout(() => req.destroy(new Error('Upstream timeout')), ATTEMPT_TIMEOUT_MS);
+    req.on('timeout', () => req.destroy(new Error('Upstream timeout')));
+    req.on('error', err => { clearTimeout(deadline); reject(err); });
+    req.on('close', () => clearTimeout(deadline));
+    if (payload) req.write(payload);
+    req.end();
+  });
+}
+
+async function requestWithRetry(upstreamReq) {
+  let lastError;
+  for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
+    try {
+      const res = await requestOnce(upstreamReq);
+      // Retry upstream hiccups, but not answers that will not change (404, bad request).
+      if (res.status >= 502 && res.status <= 504 && attempt < ATTEMPTS) { lastError = new Error(`Upstream ${res.status}`); continue; }
+      return res;
+    } catch (err) {
+      lastError = err;
+      if (err.message === 'Upstream response too large') break;
+    }
+  }
+  throw lastError;
+}
 
 // ---------- 2024: core-api ----------
 
@@ -114,24 +167,15 @@ function createCachedProxy({ cacheDir, resolve }) {
   }
 
   async function fetchUpstream(req) {
-    const headers = { accept: 'application/json', 'user-agent': 'mini-games-character-builder/1.0' };
-    if (req.body) headers['content-type'] = 'application/json';
-    const res = await fetch(req.url, {
-      method: req.method,
-      headers,
-      body: req.body ? JSON.stringify(req.body) : undefined,
-      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
-    });
-    const body = await res.text();
-    if (!res.ok) {
+    const res = await requestWithRetry(req);
+    if (res.status < 200 || res.status >= 300) {
       const err = new Error(`Upstream ${res.status}`);
       // The legacy API answers unknown slugs with 500, not 404.
       err.status = res.status === 404 || res.status === 500 ? 404 : res.status;
       throw err;
     }
-    if (body.length > MAX_BODY_BYTES) throw new Error('Upstream response too large');
-    JSON.parse(body); // refuse to cache non-JSON
-    return { body, fetchedAt: Date.now() };
+    JSON.parse(res.text); // refuse to cache non-JSON
+    return { body: res.text, fetchedAt: Date.now() };
   }
 
   async function load(req) {

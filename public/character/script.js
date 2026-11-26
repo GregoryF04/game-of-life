@@ -228,6 +228,11 @@
     }
     return out.sort((a, b) => a.level - b.level);
   }
+  // TTG groups sources as Basic (official), UA (playtest) and 3rd (third-party).
+  const isOfficial = item => item?.source?.group?.label === 'Basic';
+  const isAllowed = item => !state.officialOnly || isOfficial(item);
+  const GROUP_ORDER = { Basic: 0, UA: 1, '3rd': 2 };
+  const groupRank = item => GROUP_ORDER[item?.source?.group?.label] ?? 3;
   function featUrlFromMarkup(text) {
     const m = /url:([a-z0-9-]+)/.exec(text || '');
     return m ? m[1] : '';
@@ -558,13 +563,14 @@
   function optionsHtml(items, selected, placeholder) {
     const groups = new Map();
     for (const item of items) {
-      if (state.officialOnly && item.source?.group?.label !== 'Basic' && item.url !== selected) continue;
+      if (!isAllowed(item)) continue;
       const group = item.source?.group?.rus || 'Прочее';
-      if (!groups.has(group)) groups.set(group, []);
-      groups.get(group).push(item);
+      if (!groups.has(group)) groups.set(group, { rank: groupRank(item), items: [] });
+      groups.get(group).items.push(item);
     }
     let html = `<option value="">${esc(placeholder)}</option>`;
-    for (const [group, groupItems] of groups) {
+    const ordered = [...groups].sort((a, b) => a[1].rank - b[1].rank);
+    for (const [group, { items: groupItems }] of ordered) {
       html += `<optgroup label="${esc(group)}">${groupItems.map(item =>
         `<option value="${esc(item.url)}"${item.url === selected ? ' selected' : ''}>${esc(rus(item))} [${esc(item.source?.name?.label || '')}]</option>`).join('')}</optgroup>`;
     }
@@ -616,8 +622,8 @@
     // Lineage
     el.lineageField.hidden = !lineages.length;
     if (lineages.length) {
-      renderSection('lineage', `${state.speciesUrl}|${state.lineageUrl}|${lineages.length}`, () => {
-        el.lineage.innerHTML = `<option value="">— основной вид —</option>${lineages.map(x =>
+      renderSection('lineage', `${state.speciesUrl}|${state.lineageUrl}|${lineages.length}|${state.officialOnly}`, () => {
+        el.lineage.innerHTML = `<option value="">— основной вид —</option>${lineages.filter(isAllowed).map(x =>
           `<option value="${esc(x.url)}"${x.url === state.lineageUrl ? ' selected' : ''}>${esc(rus(x))}</option>`).join('')}`;
       });
     }
@@ -705,7 +711,7 @@
   }
 
   function renderFeatSlots(c) {
-    const signature = JSON.stringify([c.slots.map(sl => [sl.key, slotFeatUrl(sl)]), state.feats, data.featLists.general.length, data.featLists.epic.length, Object.keys(data.feats).length]);
+    const signature = JSON.stringify([c.slots.map(sl => [sl.key, slotFeatUrl(sl)]), state.feats, data.featLists.general.length, data.featLists.epic.length, Object.keys(data.feats).length, state.officialOnly]);
     renderSection('feats', signature, () => {
       if (!c.slots.length) {
         el.featSlots.innerHTML = '<p class="hint">Черта появится с предысторией, дополнительные — при улучшении характеристик (обычно 4, 8, 12, 16 и 19 уровни).</p>';
@@ -720,7 +726,7 @@
         } else {
           const groups = slot.epic ? [['Эпические черты', data.featLists.epic], ['Общие черты', data.featLists.general]] : [['Общие черты', data.featLists.general]];
           picker = `<select data-feat-slot="${slot.key}"><option value="">— выберите черту —</option>${groups.map(([label, items]) =>
-            `<optgroup label="${label}">${items.filter(f => !state.officialOnly || f.source?.group?.label === 'Basic' || f.url === url).map(f =>
+            `<optgroup label="${label}">${items.filter(isAllowed).map(f =>
               `<option value="${esc(f.url)}"${f.url === url ? ' selected' : ''}>${esc(rus(f))} [${esc(f.source?.name?.label || '')}]</option>`).join('')}</optgroup>`).join('')}</select>
             ${feat ? `<button type="button" class="linkish" data-feat-info="${esc(url)}">Описание</button>` : ''}`;
         }
@@ -750,7 +756,7 @@
       const groups = [];
       for (let lvl = sp.cantripLimit ? 0 : 1; lvl <= sp.maxLevel; lvl++) {
         const items = data.spells.filter(x => x.level === lvl
-          && (!state.officialOnly || x.source?.group?.label === 'Basic' || state.spells.includes(x.url))
+          && isAllowed(x)
           && (!filter || rus(x).toLowerCase().includes(filter) || (x.name?.eng || '').toLowerCase().includes(filter)));
         if (!items.length) continue;
         groups.push(`<h3>${lvl === 0 ? 'Заговоры' : `${lvl} уровень`}</h3>${items.map(x => `
@@ -986,7 +992,56 @@
     update();
   });
   el.alignment.addEventListener('change', () => setAndUpdate({ alignment: el.alignment.value }));
-  el.official.addEventListener('change', () => { state.officialOnly = el.official.checked; fillMainSelects(); update(); });
+  el.official.addEventListener('change', async () => {
+    state.officialOnly = el.official.checked;
+    const removed = state.officialOnly ? dropUnofficialChoices() : [];
+    fillMainSelects();
+    await update();
+    if (removed.length) setStatus(`Сброшено (неофициальные источники): ${removed.join(', ')}`);
+  });
+
+  // With the filter on, every pick must come from an official source; a hidden-but-applied
+  // third-party choice would silently keep changing the sheet.
+  function dropUnofficialChoices() {
+    const removed = [];
+    const find = (list, url) => list.find(x => x.url === url);
+    const bad = item => item && !isOfficial(item);
+
+    const cls = find(lists.classes, state.classUrl);
+    if (bad(cls)) {
+      removed.push(rus(cls));
+      Object.assign(state, { classUrl: '', subclassUrl: '', classSkills: [], spells: [], classEquip: 0 });
+    }
+    const sub = find(data.subclasses, state.subclassUrl);
+    if (state.subclassUrl && bad(sub)) { removed.push(rus(sub)); state.subclassUrl = ''; }
+
+    const species = find(lists.species, state.speciesUrl);
+    if (bad(species)) { removed.push(rus(species)); Object.assign(state, { speciesUrl: '', lineageUrl: '' }); }
+    const lineage = find(data.lineages, state.lineageUrl);
+    if (state.lineageUrl && bad(lineage)) { removed.push(rus(lineage)); state.lineageUrl = ''; }
+
+    const bg = find(lists.backgrounds, state.backgroundUrl);
+    if (bad(bg)) {
+      removed.push(rus(bg));
+      const feats = { ...state.feats };
+      delete feats.origin;
+      Object.assign(state, { backgroundUrl: '', bgPlus2: '', bgPlus1: '', bgEquip: 0, feats });
+    }
+
+    const featPool = [...data.featLists.general, ...data.featLists.epic];
+    for (const [key, entry] of Object.entries(state.feats)) {
+      if (key === 'origin') continue; // fixed by the background
+      const feat = find(featPool, entry?.url) || data.feats[entry?.url];
+      if (bad(feat)) { removed.push(rus(feat)); state.feats = { ...state.feats, [key]: { url: '', option: 0, picks: [] } }; }
+    }
+
+    const keptSpells = state.spells.filter(url => !bad(find(data.spells, url)));
+    if (keptSpells.length !== state.spells.length) {
+      removed.push(`заклинания: ${state.spells.length - keptSpells.length}`);
+      state.spells = keptSpells;
+    }
+    return removed;
+  }
   el.cls.addEventListener('change', () => setAndUpdate({ classUrl: el.cls.value, subclassUrl: '', classSkills: [], spells: [], classEquip: 0 }));
   el.subclass.addEventListener('change', () => setAndUpdate({ subclassUrl: el.subclass.value }));
   el.species.addEventListener('change', () => setAndUpdate({ speciesUrl: el.species.value, lineageUrl: '' }));

@@ -184,6 +184,13 @@
       equipmentMarkup: baseTraits.equipment || [],
       mechanics: Object.keys(mechanics).length ? mechanics : null,
       parent: parent ? { url: slug(parent.url) } : null,
+      // Subclass spells by class level (domain, oath, conclave…): always prepared and not
+      // counted. The warlock's patron table is different: an expanded list to choose from.
+      subclassSpells: parent ? (detail.archetypeSpellTable?.levels || []).map(row => ({
+        level: row.level,
+        spells: (row.spells || []).map(s => ({ url: slug(s.url), name: s.name })),
+      })) : [],
+      expandedList: Boolean(parent) && slug(parent.url) === 'warlock',
     };
   }
 

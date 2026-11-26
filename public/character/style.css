@@ -191,6 +191,8 @@ button:hover, .fileBtn:hover { border-color: var(--site-accent); color: var(--si
 .spellList .tag { margin-left: 4px; }
 .spellList .levelRow th { padding-top: 14px; color: var(--site-accent); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
 .spellList tr.chosen td { background: rgba(112, 225, 195, .07); }
+.spellList tr.always td { background: rgba(184, 245, 159, .09); }
+.tag.always { border-color: var(--site-accent-strong); color: var(--site-accent-strong); }
 .spellList tr.disabled td { opacity: .5; }
 
 .linkish {

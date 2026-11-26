@@ -229,6 +229,20 @@
       },
       loadSpells: async key => sortByName(await api(key)),
       loadSpell: url => api(`spells/${url}`),
+      // Features list granted spells; only those flagged alwaysPrepared are free (the base
+      // "Spellcasting" feature lists the whole class list without the flag).
+      async grantedSpells(eff, level) {
+        const out = new Map();
+        for (const f of eff?.features || []) {
+          for (const g of f.grantedSpells || []) {
+            if (!g.alwaysPrepared || !g.spell?.url) continue;
+            const required = g.requiredLevel || f.level || 1;
+            if (required > level || out.has(g.spell.url)) continue;
+            out.set(g.spell.url, { spell: g.spell, level: required, mode: 'always', from: f.name });
+          }
+        }
+        return [...out.values()];
+      },
     },
     2014: {
       base: '/api/dnd14/',
@@ -278,6 +292,21 @@
       },
       loadSpells: async key => sortByName((await api(key)).map(T14.normalizeSpellShort)),
       async loadSpell(url) { return T14.normalizeSpell(await api(`spells/${url}`)); },
+      // Subclass spell table: rows by class level, always prepared. The warlock table lists
+      // spells by spell level and only widens the choice, so all rows apply.
+      async grantedSpells(eff, level) {
+        const mode = eff?.expandedList ? 'expanded' : 'always';
+        const rows = (eff?.subclassSpells || []).filter(row => mode === 'expanded' || row.level <= level);
+        const items = rows.flatMap(row => row.spells.map(s => ({ ...s, level: row.level })));
+        const resolved = await Promise.all(items.map(async item => {
+          const spell = data.spells.find(x => x.url === item.url)
+            || await PROVIDERS[2014].loadSpell(item.url).catch(() => null);
+          return spell ? { spell, level: item.level, mode, from: rus(eff) } : null;
+        }));
+        const out = new Map();
+        for (const g of resolved) if (g && !out.has(g.spell.url)) out.set(g.spell.url, g);
+        return [...out.values()];
+      },
     },
   };
   let P = PROVIDERS[edition];
@@ -287,7 +316,7 @@
     cls: null, subclasses: [], subclass: null, eff: null,
     species: null, lineages: [], lineage: null,
     background: null, feats: {}, featLists: { general: [], epic: [] },
-    spells: [], spellsKey: '',
+    spells: [], spellsKey: '', granted: [],
   };
 
   async function loadData() {
@@ -330,7 +359,16 @@
       data.spells = spellKey ? await P.loadSpells(spellKey) : [];
       data.spellsKey = spellKey;
     }
+    data.granted = spellKey ? await P.grantedSpells(data.eff, s.level).catch(() => []) : [];
   }
+
+  // Spells the player can pick: the class list plus a warlock's expanded patron list.
+  function spellPool() {
+    const extra = (data.granted || []).filter(g => g.mode === 'expanded' && !data.spells.some(x => x.url === g.spell.url))
+      .map(g => ({ ...g.spell, expanded: true }));
+    return extra.length ? sortByName([...data.spells, ...extra]) : data.spells;
+  }
+  const alwaysPrepared = () => (data.granted || []).filter(g => g.mode === 'always');
 
   // ---------- helpers ----------
 
@@ -709,13 +747,19 @@
       if (preparedRaw != null) preparedLimit = Number(preparedRaw) || 0;
       else if (knownRaw != null) { preparedLimit = Number(knownRaw) || 0; limitLabel = 'Известно'; }
       else if (eff.edition === '2014') preparedLimit = Math.max(1, abilityMod + (eff.preparedHalfLevel ? Math.floor(L / 2) : L));
-      const chosen = data.spells.filter(sp => s.spells.includes(sp.url));
+      // Always-prepared spells (domain, oath, …) never count against the limits, even if the
+      // player also ticked one of them.
+      const always = alwaysPrepared();
+      const alwaysUrls = new Set(always.map(g => g.spell.url));
+      const chosen = spellPool().filter(sp => s.spells.includes(sp.url) && !alwaysUrls.has(sp.url));
       const cantrips = chosen.filter(sp => sp.level === 0);
       const leveled = chosen.filter(sp => sp.level > 0 && sp.level <= maxLevel);
+      const alwaysSpells = always.map(g => ({ ...g.spell, alwaysFrom: g.from, grantedAt: g.level }));
       spell = {
         type: eff.casterType, abilityKey, abilityMod,
         dc: 8 + pb + abilityMod, attack: pb + abilityMod,
         slotsRow, pact, maxLevel, cantripLimit, preparedLimit, limitLabel, cantrips, leveled,
+        always: alwaysSpells, alwaysUrls,
       };
     }
 
@@ -1018,7 +1062,8 @@
 
   function spellMatches(x, sp) {
     const f = spellFilter;
-    const chosen = state.spells.includes(x.url);
+    // Granted spells come with the subclass, whatever books are ticked.
+    const chosen = state.spells.includes(x.url) || sp.alwaysUrls.has(x.url);
     if (!isAllowed(x) && !chosen) return false;
     if (x.level === 0 && !sp.cantripLimit && !chosen) return false; // class has no cantrips
     if (f.available && x.level > sp.maxLevel && !chosen) return false;
@@ -1043,6 +1088,7 @@
     parts.push(sp.preparedLimit != null
       ? `${sp.limitLabel}: <b>${sp.leveled.length} / ${sp.preparedLimit}</b>`
       : `${sp.limitLabel}: <b>${sp.leveled.length}</b>`);
+    if (sp.always.length) parts.push(`+ всегда подготовлены: <b>${sp.always.length}</b>`);
     parts.push(`макс. уровень: <b>${sp.maxLevel}</b>`);
     const over = sp.cantrips.length > sp.cantripLimit || (sp.preparedLimit != null && sp.leveled.length > sp.preparedLimit);
     return parts.join(' · ') + (over ? ' <span class="warn">— больше лимита, снимите лишние.</span>' : '');
@@ -1052,7 +1098,7 @@
     lastComputed = c;
     const sp = c.spell;
     el.spellPanel.hidden = !sp;
-    el.tabSpellCount.textContent = sp ? String(sp.cantrips.length + sp.leveled.length) : '';
+    el.tabSpellCount.textContent = sp ? String(sp.cantrips.length + sp.leveled.length + sp.always.length) : '';
 
     if (!sp) {
       const eff = data.eff;
@@ -1071,9 +1117,16 @@
     el.spellSummary.innerHTML = summary;
     el.spellCounts.innerHTML = summary;
 
+    // Everything the tab can show: the pickable pool plus granted spells outside the class list.
+    const pickable = spellPool();
+    const pickableUrls = new Set(pickable.map(x => x.url));
+    const browse = [...pickable, ...sp.always.filter(x => !pickableUrls.has(x.url))];
+    const alwaysFrom = new Map(sp.always.map(x => [x.url, x.alwaysFrom]));
+    const grantedKey = [...sp.alwaysUrls].join(',') + '|' + pickable.filter(x => x.expanded).length;
+
     // Filter chips depend on the spell list (edition, class, books).
-    const pool = data.spells.filter(x => isAllowed(x) || state.spells.includes(x.url));
-    renderSection('spellChips', `${data.spellsKey}|${sourcesKey()}`, () => {
+    const pool = browse.filter(x => isAllowed(x) || state.spells.includes(x.url) || sp.alwaysUrls.has(x.url));
+    renderSection('spellChips', `${data.spellsKey}|${sourcesKey()}|${grantedKey}`, () => {
       const levels = [...new Set(pool.map(x => x.level))].sort((a, b) => a - b);
       const schools = [...new Set(pool.map(x => x.school).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ru'));
       el.filterLevels.innerHTML = levels.map(l => `<label><input type="checkbox" data-filter-level="${l}"${spellFilter.levels.has(l) ? ' checked' : ''}> ${l === 0 ? 'Заговор' : l}</label>`).join('');
@@ -1086,8 +1139,8 @@
     const f = spellFilter;
     const filterKey = JSON.stringify([f.search, [...f.levels], [...f.schools], f.conc, f.ritual, f.noV, f.noS, f.noM, f.available,
       f.chosen ? state.spells : null]);
-    renderSection('spellRows', `${data.spellsKey}|${sp.maxLevel}|${sp.cantripLimit}|${sourcesKey()}|${filterKey}`, () => {
-      const items = data.spells.filter(x => spellMatches(x, sp));
+    renderSection('spellRows', `${data.spellsKey}|${sp.maxLevel}|${sp.cantripLimit}|${sourcesKey()}|${grantedKey}|${filterKey}`, () => {
+      const items = browse.filter(x => spellMatches(x, sp));
       const byLevel = new Map();
       for (const x of items) {
         if (!byLevel.has(x.level)) byLevel.set(x.level, []);
@@ -1102,6 +1155,8 @@
             <td><input type="checkbox" data-spell="${esc(x.url)}" data-level="${x.level}" aria-label="${esc(rus(x))}"></td>
             <td><button type="button" class="linkish" data-spell-info="${esc(x.url)}">${esc(rus(x))}</button>
               ${x.concentration ? '<span class="tag" title="Концентрация">К</span>' : ''}${x.ritual ? '<span class="tag" title="Ритуал">Р</span>' : ''}
+              ${alwaysFrom.has(x.url) ? `<span class="tag always" title="Всегда подготовлено, не учитывается в лимите: ${esc(alwaysFrom.get(x.url))}">всегда</span>` : ''}
+              ${x.expanded ? '<span class="tag" title="Расширенный список заклинаний покровителя">покровитель</span>' : ''}
               ${x.name?.eng ? `<div class="eng">${esc(x.name.eng)}</div>` : ''}</td>
             <td>${esc(x.school || '')}</td>
             <td>${comps(x)}</td>
@@ -1115,13 +1170,23 @@
     const preparedFull = sp.preparedLimit != null && sp.leveled.length >= sp.preparedLimit;
     el.spellBrowserBody.querySelectorAll('[data-spell]').forEach(box => {
       const level = Number(box.dataset.level);
+      const row = box.closest('tr');
+      if (sp.alwaysUrls.has(box.dataset.spell)) {
+        box.checked = true;
+        box.disabled = true;
+        box.title = 'Всегда подготовлено — не учитывается в лимите';
+        row.classList.add('chosen', 'always');
+        row.classList.remove('disabled');
+        return;
+      }
+      row.classList.remove('always');
       box.checked = state.spells.includes(box.dataset.spell);
       const full = level === 0 ? cantripsFull : preparedFull;
       const tooHigh = level > sp.maxLevel;
       box.disabled = !box.checked && (full || tooHigh);
       box.title = tooHigh ? 'Недоступно на текущем уровне' : full && !box.checked ? 'Достигнут лимит' : '';
-      box.closest('tr').classList.toggle('chosen', box.checked);
-      box.closest('tr').classList.toggle('disabled', box.disabled);
+      row.classList.toggle('chosen', box.checked);
+      row.classList.toggle('disabled', box.disabled);
     });
   }
 
@@ -1252,7 +1317,7 @@
       const slotHtml = sp.pact
         ? `<div class="slot"><b>${sp.pact.count}</b>ячейки ${sp.pact.level} ур.</div>`
         : sp.slotsRow.map((n, i) => `<div class="slot"><b>${n}</b>${i + 1} ур.</div>`).join('');
-      const rows = [...sp.cantrips, ...sp.leveled].sort((a, b) => a.level - b.level || rus(a).localeCompare(rus(b), 'ru'));
+      const rows = [...sp.cantrips, ...sp.leveled, ...sp.always].sort((a, b) => a.level - b.level || rus(a).localeCompare(rus(b), 'ru'));
       spellHtml = `
         <section class="box">
           <h3>Заклинания · ${esc(CASTER_NAMES[sp.type] || '')}</h3>
@@ -1264,7 +1329,7 @@
           <div class="slots">${slotHtml}</div>
           ${rows.length ? `<table class="spellTable"><tr><th>Ур.</th><th>Название</th><th>Школа</th><th>Компоненты</th></tr>${rows.map(x => `
             <tr><td>${x.level || 'з'}</td>
-              <td><button type="button" class="linkish" data-spell-info="${esc(x.url)}">${esc(rus(x))}</button>${x.concentration ? ' <span class="tag">К</span>' : ''}${x.ritual ? ' <span class="tag">Р</span>' : ''}</td>
+              <td><button type="button" class="linkish" data-spell-info="${esc(x.url)}">${esc(rus(x))}</button>${x.concentration ? ' <span class="tag">К</span>' : ''}${x.ritual ? ' <span class="tag">Р</span>' : ''}${x.alwaysFrom ? ` <span class="tag always" title="Всегда подготовлено: ${esc(x.alwaysFrom)}">всегда</span>` : ''}</td>
               <td>${esc(x.school || '')}</td>
               <td>${['v', 's', 'm'].filter(k => x.components?.[k]).map(k => ({ v: 'В', s: 'С', m: 'М' })[k]).join(', ')}</td></tr>`).join('')}</table>`
             : '<p class="muted">Выберите заклинания в конструкторе.</p>'}
@@ -1458,7 +1523,8 @@
       if (bad(feat)) { removed.push(rus(feat)); state.feats = { ...state.feats, [key]: { url: '', option: 0, picks: [] } }; }
     }
 
-    const keptSpells = state.spells.filter(url => !bad(find(data.spells, url)));
+    const pool = spellPool();
+    const keptSpells = state.spells.filter(url => !bad(find(pool, url)));
     if (keptSpells.length !== state.spells.length) {
       removed.push(`заклинания: ${state.spells.length - keptSpells.length}`);
       state.spells = keptSpells;
@@ -1687,7 +1753,7 @@
     state = loadState(edition);
     Object.assign(data, {
       cls: null, subclasses: [], subclass: null, eff: null, species: null, lineages: [], lineage: null,
-      background: null, feats: {}, featLists: { general: [], epic: [] }, spells: [], spellsKey: '',
+      background: null, feats: {}, featLists: { general: [], epic: [] }, spells: [], spellsKey: '', granted: [],
     });
     Object.keys(rendered).forEach(k => delete rendered[k]);
     spellFilter = defaultSpellFilter();

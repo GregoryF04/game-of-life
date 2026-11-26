@@ -20,6 +20,7 @@ jobs:
       - name: Syntax check (backend + all browser scripts)
         run: |
           node --check backend/server.js
+          node --check backend/dnd-proxy.js
           find public -name '*.js' -print0 | xargs -0 -n1 node --check
 
       - name: Build Docker image

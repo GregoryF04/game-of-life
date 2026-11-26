@@ -962,7 +962,18 @@
       setStatus('Загрузка…');
       await loadData();
       if (mine !== generation) return;
-      setStatus('Сохранено');
+      // Enforce the official-only filter on every update, not just when the checkbox is
+      // clicked: a saved or imported character may already carry third-party picks.
+      const removed = state.officialOnly ? dropUnofficialChoices() : [];
+      if (removed.length) {
+        save();
+        fillMainSelects();
+        await loadData();
+        if (mine !== generation) return;
+        setStatus(`Сброшено (неофициальные источники): ${removed.join(', ')}`);
+      } else {
+        setStatus('Сохранено');
+      }
     } catch (err) {
       if (mine !== generation) return;
       console.error(err);
@@ -992,12 +1003,10 @@
     update();
   });
   el.alignment.addEventListener('change', () => setAndUpdate({ alignment: el.alignment.value }));
-  el.official.addEventListener('change', async () => {
+  el.official.addEventListener('change', () => {
     state.officialOnly = el.official.checked;
-    const removed = state.officialOnly ? dropUnofficialChoices() : [];
     fillMainSelects();
-    await update();
-    if (removed.length) setStatus(`Сброшено (неофициальные источники): ${removed.join(', ')}`);
+    update(); // update() drops any non-official picks while the filter is on
   });
 
   // With the filter on, every pick must come from an official source; a hidden-but-applied

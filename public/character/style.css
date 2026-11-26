@@ -192,6 +192,15 @@ button:hover, .fileBtn:hover { border-color: var(--site-accent); color: var(--si
 .spellList .levelRow th { padding-top: 14px; color: var(--site-accent); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
 .spellList tr.chosen td { background: rgba(112, 225, 195, .07); }
 .spellList tr.always td { background: rgba(184, 245, 159, .09); }
+.extraSpells { margin: 12px 0 18px; padding: 12px; border: 1px solid var(--site-line); border-radius: 8px; }
+.extraSpells h3 { margin-bottom: 10px; }
+.extraSpells h3 .muted { text-transform: none; letter-spacing: 0; font-weight: 400; }
+.extraSource { padding: 8px 0; border-top: 1px dashed var(--site-line); }
+.extraSource:first-of-type { border-top: 0; }
+.extraSource .slotTitle { margin-bottom: 6px; color: var(--site-accent); font-size: 13px; }
+.extraSource label { display: block; margin: 6px 0; color: var(--site-muted); font-size: 12px; }
+.extraSource select { width: 100%; padding: 5px 7px; font-size: 12px; }
+.extraSource .bonusPicks { display: grid; gap: 6px; }
 .tag.always { border-color: var(--site-accent-strong); color: var(--site-accent-strong); }
 .spellList tr.disabled td { opacity: .5; }
 

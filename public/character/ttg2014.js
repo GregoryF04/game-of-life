@@ -33,6 +33,53 @@
     'classes/sorcerer/draconic': { modifiers: { hitPoints: { perAcquisitionLevel: 1, perLevelAfterAcquisition: 1 } } },
   };
 
+  // Racial and feat spells: the legacy API only describes these in prose. Covers the PHB,
+  // XGE and TCE races and feats. fixed: [spell slug, character level]; choices pick from a
+  // class list ("list"), from the list chosen in listOptions ("choice"), or from any list.
+  const SPELL_GRANTS = {
+    races: {
+      tiefling: { fixed: [['thaumaturgy', 1], ['hellish_rebuke', 3], ['darkness', 5]], replacedBySubrace: true },
+      'tiefling/asmodeus': { fixed: [['thaumaturgy', 1], ['hellish_rebuke', 3], ['darkness', 5]] },
+      'elf/high': { choices: [{ key: 'cantrip', label: 'Заговор волшебника', count: 1, level: 0, list: 'wizard' }] },
+      'elf/drow': { fixed: [['dancing_lights', 1], ['faerie_fire', 3], ['darkness', 5]] },
+      'gnome/forest': { fixed: [['minor_illusion', 1]] },
+    },
+    feats: {
+      magic_initiate: {
+        listOptions: ['bard', 'cleric', 'druid', 'sorcerer', 'warlock', 'wizard'],
+        choices: [
+          { key: 'cantrip', label: 'Два заговора', count: 2, level: 0, list: 'choice' },
+          { key: 'spell', label: 'Заклинание 1 уровня', count: 1, level: 1, list: 'choice' },
+        ],
+      },
+      fey_touched: {
+        fixed: [['misty_step', 1]],
+        choices: [{ key: 'spell', label: 'Заклинание 1 уровня: прорицание или очарование', count: 1, level: 1, list: 'any', schools: ['Прорицание', 'Очарование'] }],
+      },
+      shadow_touched: {
+        fixed: [['invisibility', 1]],
+        choices: [{ key: 'spell', label: 'Заклинание 1 уровня: иллюзия или некромантия', count: 1, level: 1, list: 'any', schools: ['Иллюзия', 'Некромантия'] }],
+      },
+      telekinetic: { fixed: [['mage_hand', 1]] },
+      telepathic: { fixed: [['detect_thoughts', 1]] },
+      artificer_initiate: {
+        choices: [
+          { key: 'cantrip', label: 'Заговор изобретателя', count: 1, level: 0, list: 'artificer' },
+          { key: 'spell', label: 'Заклинание изобретателя 1 уровня', count: 1, level: 1, list: 'artificer' },
+        ],
+      },
+      drow_high_magic: { fixed: [['detect_magic', 1], ['levitate', 1], ['dispel_magic', 1]] },
+      wood_elf_magic: {
+        fixed: [['longstrider', 1], ['pass_without_trace', 1]],
+        choices: [{ key: 'cantrip', label: 'Заговор друида', count: 1, level: 0, list: 'druid' }],
+      },
+      fey_teleportation: { fixed: [['misty_step', 1]] },
+    },
+  };
+  // Legacy class ids, used by the spell-list endpoint.
+  const CLASS_IDS = { bard: 1, wizard: 2, druid: 3, cleric: 4, warlock: 5, paladin: 6, ranger: 7, sorcerer: 8, artificer: 14 };
+  const CLASS_NAMES = { bard: 'Бард', wizard: 'Волшебник', druid: 'Друид', cleric: 'Жрец', warlock: 'Колдун', paladin: 'Паладин', ranger: 'Следопыт', sorcerer: 'Чародей', artificer: 'Изобретатель' };
+
   // The legacy data says level 2 for these, but the 2014 PHB has Sorcerous Origin and
   // Otherworldly Patron at level 1. Every other PHB class matches the book.
   const SUBCLASS_LEVEL_FIX = { sorcerer: 1, warlock: 1 };
@@ -355,7 +402,7 @@
   }
 
   window.TTG2014 = {
-    SKILLS,
+    SKILLS, SPELL_GRANTS, CLASS_IDS, CLASS_NAMES,
     slug,
     normalizeClass, normalizeClassShort,
     normalizeRace, normalizeRaceShort,

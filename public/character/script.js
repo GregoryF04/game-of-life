@@ -93,6 +93,7 @@
       manual: Object.fromEntries(ABILITIES.map(a => [a.key, 10])),
       bgMode: '2-1', bgPlus2: '', bgPlus1: '',
       raceBonus: {}, // 2014: free ability picks per race bonus entry, { [entryIndex]: [ABILITY, ...] }
+      extraSpells: {}, // racial/feat spell choices: { [sourceKey]: { list, picks: { [choiceKey]: [url, ...] } } }
       classSkills: [],
       feats: {},
       spells: [],
@@ -112,6 +113,7 @@
     if (!Array.isArray(s.spells)) s.spells = [];
     if (!s.feats || typeof s.feats !== 'object') s.feats = {};
     if (!s.raceBonus || typeof s.raceBonus !== 'object') s.raceBonus = {};
+    if (!s.extraSpells || typeof s.extraSpells !== 'object') s.extraSpells = {};
     // Older saves had a single officialOnly flag. Keep their behaviour: filter on → default
     // book set; filter off → all books ('*'), so nothing gets dropped from them on load.
     s.sources = Array.isArray(raw.sources) ? raw.sources.filter(x => typeof x === 'string')
@@ -243,6 +245,44 @@
         }
         return [...out.values()];
       },
+      // Racial spells come as innateSpells; feats as grantedSpells plus structured choices.
+      spellSources({ species, lineage, feats, pb, background }) {
+        const sources = [];
+        for (const [key, race] of [['species', species], ['lineage', lineage]]) {
+          if (!race?.innateSpells?.length) continue;
+          sources.push({
+            key, title: rus(race), tag: 'раса', choices: [], listOptions: null,
+            fixed: race.innateSpells.filter(g => g.spell?.url).map(g => ({ url: g.spell.url, spell: g.spell, level: g.requiredLevel || 1 })),
+          });
+        }
+        for (const { slot, feat } of feats) {
+          const choices = [];
+          let listOptions = null;
+          for (const ch of feat.mechanics?.choices || []) {
+            if (ch.type === 'SPELL_LIST') listOptions = (ch.options || []).map(o => ({ value: o.value, label: o.name }));
+            if (ch.type !== 'CANTRIP' && ch.type !== 'SPELL') continue;
+            const label = ch.label || '';
+            choices.push({
+              key: ch.key, label,
+              count: ch.countEqualsProficiencyBonus ? pb : (ch.count || 1),
+              level: ch.spellFilter?.level ?? (ch.type === 'CANTRIP' ? 0 : 1),
+              list: ch.spellFilter?.classesFromChoiceKey ? 'choice' : 'any',
+              schools: schoolsFromText(label), ritual: /ритуал/i.test(label),
+            });
+          }
+          const fixed = (feat.grantedSpells || []).filter(g => g.spell?.url).map(g => ({ url: g.spell.url, spell: g.spell, level: slot.level }));
+          if (!fixed.length && !choices.length) continue;
+          // A background's Magic Initiate names its list: "… (Волшебник)".
+          const defaultList = slot.key === 'origin' && listOptions
+            ? listOptions.find(o => (background?.feat || '').includes(`(${o.label})`))?.value || '' : '';
+          sources.push({ key: `feat:${slot.key}`, title: rus(feat), tag: 'черта', fixed, choices, listOptions, defaultList });
+        }
+        return sources;
+      },
+      async loadCandidates(ref, level) {
+        const key = ref === 'any' ? `spells/search?level=${level}` : `spells/search?className=${ref}&level=${level}`;
+        return sortByName(await api(key));
+      },
     },
     2014: {
       base: '/api/dnd14/',
@@ -307,6 +347,35 @@
         for (const g of resolved) if (g && !out.has(g.spell.url)) out.set(g.spell.url, g);
         return [...out.values()];
       },
+      // The legacy API has no structured racial/feat spells; see TTG2014.SPELL_GRANTS.
+      spellSources({ species, lineage, feats }) {
+        const table = T14.SPELL_GRANTS;
+        const sources = [];
+        const fromEntry = (key, title, tag, entry) => {
+          if (!entry) return;
+          sources.push({
+            key, title, tag,
+            fixed: (entry.fixed || []).map(([url, level]) => ({ url, level })),
+            choices: (entry.choices || []).map(ch => ({ ...ch, schools: ch.schools || [], ritual: false })),
+            listOptions: entry.listOptions ? entry.listOptions.map(v => ({ value: v, label: T14.CLASS_NAMES[v] || v })) : null,
+            defaultList: '',
+          });
+        };
+        const raceEntry = species && table.races[species.url];
+        const lineageEntry = lineage && table.races[lineage.url];
+        // Subraces that change the racial spells (tiefling variants) replace the base entry.
+        if (raceEntry && !(lineage && raceEntry.replacedBySubrace)) fromEntry('species', rus(species), 'раса', raceEntry);
+        if (lineageEntry) fromEntry('lineage', rus(lineage), 'раса', lineageEntry);
+        for (const { slot, feat } of feats) fromEntry(`feat:${slot.key}`, rus(feat), 'черта', table.feats[feat.url]);
+        return sources;
+      },
+      async loadCandidates(ref, level) {
+        const ids = ref === 'any' ? Object.values(T14.CLASS_IDS) : [T14.CLASS_IDS[ref]].filter(Boolean);
+        const lists14 = await Promise.all(ids.map(id => api(`spells?class=${id}`).catch(() => [])));
+        const byUrl = new Map();
+        for (const s of lists14.flat().map(T14.normalizeSpellShort)) if (s.level === level && !byUrl.has(s.url)) byUrl.set(s.url, s);
+        return sortByName([...byUrl.values()]);
+      },
     },
   };
   let P = PROVIDERS[edition];
@@ -316,7 +385,7 @@
     cls: null, subclasses: [], subclass: null, eff: null,
     species: null, lineages: [], lineage: null,
     background: null, feats: {}, featLists: { general: [], epic: [] },
-    spells: [], spellsKey: '', granted: [],
+    spells: [], spellsKey: '', granted: [], spellSources: [], spellCandidates: {},
   };
 
   async function loadData() {
@@ -360,6 +429,66 @@
       data.spellsKey = spellKey;
     }
     data.granted = spellKey ? await P.grantedSpells(data.eff, s.level).catch(() => []) : [];
+    await loadSpellSources(slots);
+  }
+
+  // Racial and feat spells: fixed grants plus choices from a class list.
+  async function loadSpellSources(slots) {
+    const feats = slots.map(slot => ({ slot, feat: data.feats[slotFeatUrl(slot)] }))
+      .filter(x => x.feat && x.feat.url !== ASI_FEAT.url);
+    const pb = 2 + Math.floor((state.level - 1) / 4);
+    const sources = P.spellSources({ species: data.species, lineage: data.lineage, feats, pb, background: data.background });
+    await Promise.all(sources.flatMap(src => src.fixed.filter(f => !f.spell).map(async f => {
+      f.spell = await P.loadSpell(f.url).catch(() => null);
+    })));
+    const candidates = {};
+    await Promise.all(sources.flatMap(src => src.choices.map(async ch => {
+      const ref = sourceListRef(src, ch);
+      const list = ref ? await P.loadCandidates(ref, ch.level).catch(() => []) : [];
+      candidates[`${src.key}:${ch.key}`] = list.filter(x => x.level === ch.level
+        && (!ch.schools.length || ch.schools.includes(x.school))
+        && (!ch.ritual || x.ritual));
+    })));
+    data.spellSources = sources;
+    data.spellCandidates = candidates;
+  }
+
+  function sourceListRef(src, ch) {
+    if (ch.list !== 'choice') return ch.list;
+    return state.extraSpells[src.key]?.list || src.defaultList || '';
+  }
+
+  const SCHOOL_STEMS = [
+    ['прорицан', 'Прорицание'], ['очарован', 'Очарование'], ['иллюзи', 'Иллюзия'], ['некромант', 'Некромантия'],
+    ['воплощен', 'Воплощение'], ['вызов', 'Вызов'], ['огражден', 'Ограждение'], ['преобразован', 'Преобразование'],
+  ];
+  // "Заклинание 1 круга школы прорицания или очарования" -> ['Прорицание', 'Очарование']
+  function schoolsFromText(text) {
+    const t = String(text || '').toLowerCase();
+    return SCHOOL_STEMS.filter(([stem]) => t.includes(stem)).map(([, school]) => school);
+  }
+
+  // Racial/feat spells currently granted: fixed ones up to the character level plus valid picks.
+  function extraSpellsNow() {
+    const out = new Map();
+    for (const src of data.spellSources || []) {
+      for (const f of src.fixed) {
+        if (f.spell && f.level <= state.level && !out.has(f.spell.url)) {
+          out.set(f.spell.url, { ...f.spell, alwaysFrom: src.title, sourceTag: src.tag, grantedAt: f.level });
+        }
+      }
+      for (const ch of src.choices) {
+        const cands = data.spellCandidates?.[`${src.key}:${ch.key}`] || [];
+        const picked = [];
+        for (const url of state.extraSpells[src.key]?.picks?.[ch.key] || []) {
+          const spell = cands.find(x => x.url === url);
+          if (!spell || picked.includes(url) || picked.length >= ch.count) continue;
+          picked.push(url);
+          if (!out.has(url)) out.set(url, { ...spell, alwaysFrom: src.title, sourceTag: src.tag });
+        }
+      }
+    }
+    return [...out.values()];
   }
 
   // Spells the player can pick: the class list plus a warlock's expanded patron list.
@@ -719,6 +848,7 @@
     if (s.shield && cls && !armorCats.includes('SHIELD')) warnings.push('Нет владения щитами');
 
     // Spellcasting
+    const extraSpells = extraSpellsNow(); // racial and feat spells, also for non-casters
     let spell = null;
     if (eff && isCasterType(eff.casterType) && L >= (eff.spellcastingStartLevel || 1)) {
       let slotsRow = [];
@@ -749,12 +879,13 @@
       else if (eff.edition === '2014') preparedLimit = Math.max(1, abilityMod + (eff.preparedHalfLevel ? Math.floor(L / 2) : L));
       // Always-prepared spells (domain, oath, …) never count against the limits, even if the
       // player also ticked one of them.
-      const always = alwaysPrepared();
-      const alwaysUrls = new Set(always.map(g => g.spell.url));
+      // Racial and feat spells are free the same way.
+      const alwaysSpells = alwaysPrepared().map(g => ({ ...g.spell, alwaysFrom: g.from, grantedAt: g.level }));
+      for (const x of extraSpells) if (!alwaysSpells.some(a => a.url === x.url)) alwaysSpells.push(x);
+      const alwaysUrls = new Set(alwaysSpells.map(x => x.url));
       const chosen = spellPool().filter(sp => s.spells.includes(sp.url) && !alwaysUrls.has(sp.url));
       const cantrips = chosen.filter(sp => sp.level === 0);
       const leveled = chosen.filter(sp => sp.level > 0 && sp.level <= maxLevel);
-      const alwaysSpells = always.map(g => ({ ...g.spell, alwaysFrom: g.from, grantedAt: g.level }));
       spell = {
         type: eff.casterType, abilityKey, abilityMod,
         dc: 8 + pb + abilityMod, attack: pb + abilityMod,
@@ -787,7 +918,7 @@
       saves, skills, bgSkills, classSkills, skillData,
       hp, hd, ac, acNote, warnings,
       init: mods.DEXTERITY + (mech.initPB ? pb : 0) + mech.initBonus, initPB: mech.initPB,
-      racePlan,
+      racePlan, extraSpells,
       speed: props.movement?.base || 30, movement: props.movement || {}, size: props.size, creatureType: props.type,
       mech, classFeatures, speciesFeatures, spell, resources,
     };
@@ -820,6 +951,7 @@
     spellPanel: $('spellPanel'), spellSummary: $('spellSummary'), spellCounts: $('spellCounts'),
     spellsTab: $('spellsTab'), builderTab: $('builderTab'), tabBtnSpells: $('tabBtnSpells'), tabBtnBuilder: $('tabBtnBuilder'),
     tabSpellCount: $('tabSpellCount'), spellBrowserBody: $('spellBrowserBody'), spellSearch: $('spellSearch'),
+    extraSpells: $('extraSpells'),
     filterLevels: $('filterLevels'), filterSchools: $('filterSchools'), filterConcGroup: $('filterConcGroup'),
     filterRitualRow: $('filterRitualRow'), filterRitual: $('filterRitual'), filterNoV: $('filterNoV'), filterNoS: $('filterNoS'),
     filterNoM: $('filterNoM'), filterChosen: $('filterChosen'), filterAvailable: $('filterAvailable'),
@@ -1094,21 +1226,60 @@
     return parts.join(' · ') + (over ? ' <span class="warn">— больше лимита, снимите лишние.</span>' : '');
   }
 
+  // Racial and feat spells: fixed grants are listed, choices get pickers.
+  function renderExtraSpells(c) {
+    const sources = data.spellSources || [];
+    const signature = JSON.stringify([sources.map(s => [s.key, s.title, s.fixed.length, s.choices.map(ch => [ch.key, ch.count])]),
+      state.extraSpells, state.level, Object.entries(data.spellCandidates || {}).map(([k, v]) => [k, v.length]), sourcesKey()]);
+    renderSection('extraSpells', signature, () => {
+      if (!sources.length) { el.extraSpells.innerHTML = ''; return; }
+      const spellLink = x => `<button type="button" class="linkish" data-spell-info="${esc(x.url)}">${esc(rus(x))}</button>`;
+      el.extraSpells.innerHTML = `<section class="extraSpells">
+        <h3>Заклинания расы и черт <span class="muted">— всегда подготовлены, не учитываются в лимите</span></h3>
+        ${sources.map(src => {
+          const pick = state.extraSpells[src.key] || {};
+          const fixed = src.fixed.filter(f => f.spell).map(f => f.level <= state.level
+            ? `<li>${spellLink(f.spell)} <span class="muted">${f.spell.level ? `${f.spell.level} ур.` : 'заговор'}</span></li>`
+            : `<li class="muted">${esc(rus(f.spell))} — с ${f.level} уровня персонажа</li>`).join('');
+          const list = src.listOptions ? `<label>Список заклинаний <select data-extra-list="${esc(src.key)}">
+            <option value="">— выберите класс —</option>${src.listOptions.map(o =>
+              `<option value="${esc(o.value)}"${o.value === sourceListRef(src, { list: 'choice' }) ? ' selected' : ''}>${esc(o.label)}</option>`).join('')}</select></label>` : '';
+          const choices = src.choices.map(ch => {
+            const cands = (data.spellCandidates[`${src.key}:${ch.key}`] || []).filter(x => isAllowed(x) || (pick.picks?.[ch.key] || []).includes(x.url));
+            const ref = sourceListRef(src, ch);
+            if (!ref) return `<p class="hint">${esc(ch.label)}: сначала выберите список заклинаний.</p>`;
+            const picks = pick.picks?.[ch.key] || [];
+            return `<div class="choiceGroup"><div class="choiceTitle">${esc(ch.label)}${ch.count > 1 ? ` (${ch.count})` : ''}</div>
+              <div class="bonusPicks">${Array.from({ length: ch.count }, (_, i) => `<select data-extra-pick="${esc(src.key)}" data-choice="${esc(ch.key)}" data-index="${i}">
+                <option value="">— выберите —</option>${cands.map(x =>
+                  `<option value="${esc(x.url)}"${picks[i] === x.url ? ' selected' : ''}>${esc(rus(x))}${x.school ? ` · ${esc(x.school)}` : ''}</option>`).join('')}</select>`).join('')}</div></div>`;
+          }).join('');
+          return `<div class="extraSource"><div class="slotTitle">${esc(src.title)} <span class="tag">${esc(src.tag)}</span></div>
+            ${fixed ? `<ul class="list">${fixed}</ul>` : ''}${list}${choices}</div>`;
+        }).join('')}
+      </section>`;
+    });
+  }
+
   function renderSpells(c) {
     lastComputed = c;
     const sp = c.spell;
-    el.spellPanel.hidden = !sp;
-    el.tabSpellCount.textContent = sp ? String(sp.cantrips.length + sp.leveled.length + sp.always.length) : '';
+    renderExtraSpells(c);
+    el.spellPanel.hidden = !sp && !c.extraSpells.length;
+    el.tabSpellCount.textContent = sp ? String(sp.cantrips.length + sp.leveled.length + sp.always.length)
+      : c.extraSpells.length ? String(c.extraSpells.length) : '';
 
     if (!sp) {
+      el.spellSummary.innerHTML = c.extraSpells.length ? `Заклинания расы и черт: <b>${c.extraSpells.length}</b>` : '';
       const eff = data.eff;
       const startsLater = eff && isCasterType(eff.casterType) && state.level < (eff.spellcastingStartLevel || 1);
       el.spellCounts.innerHTML = '';
       el.spellBrowserBody.innerHTML = `<p class="sheetEmpty">${
         !data.cls ? 'Выберите класс на вкладке «Персонаж».'
           : startsLater ? `Заклинания появятся с ${eff.spellcastingStartLevel} уровня.`
-            : data.subclasses.length && !data.subclass ? 'Этот класс не использует заклинания (некоторые подклассы — используют).'
-              : 'Этот персонаж не использует заклинания.'}</p>`;
+            : data.subclasses.length && !data.subclass ? 'Класс не использует заклинания (некоторые подклассы — используют).'
+              : c.extraSpells.length || (data.spellSources || []).length ? 'Класс не даёт заклинаний.'
+                : 'Этот персонаж не использует заклинания.'}</p>`;
       rendered.spellRows = '';
       return;
     }
@@ -1122,6 +1293,7 @@
     const pickableUrls = new Set(pickable.map(x => x.url));
     const browse = [...pickable, ...sp.always.filter(x => !pickableUrls.has(x.url))];
     const alwaysFrom = new Map(sp.always.map(x => [x.url, x.alwaysFrom]));
+    const alwaysTag = new Map(sp.always.map(x => [x.url, x.sourceTag || 'всегда']));
     const grantedKey = [...sp.alwaysUrls].join(',') + '|' + pickable.filter(x => x.expanded).length;
 
     // Filter chips depend on the spell list (edition, class, books).
@@ -1155,7 +1327,7 @@
             <td><input type="checkbox" data-spell="${esc(x.url)}" data-level="${x.level}" aria-label="${esc(rus(x))}"></td>
             <td><button type="button" class="linkish" data-spell-info="${esc(x.url)}">${esc(rus(x))}</button>
               ${x.concentration ? '<span class="tag" title="Концентрация">К</span>' : ''}${x.ritual ? '<span class="tag" title="Ритуал">Р</span>' : ''}
-              ${alwaysFrom.has(x.url) ? `<span class="tag always" title="Всегда подготовлено, не учитывается в лимите: ${esc(alwaysFrom.get(x.url))}">всегда</span>` : ''}
+              ${alwaysFrom.has(x.url) ? `<span class="tag always" title="Всегда подготовлено, не учитывается в лимите: ${esc(alwaysFrom.get(x.url))}">${esc(alwaysTag.get(x.url))}</span>` : ''}
               ${x.expanded ? '<span class="tag" title="Расширенный список заклинаний покровителя">покровитель</span>' : ''}
               ${x.name?.eng ? `<div class="eng">${esc(x.name.eng)}</div>` : ''}</td>
             <td>${esc(x.school || '')}</td>
@@ -1312,6 +1484,19 @@
     const featHtml = bgFeatureHtml + c.feats.map(({ slot, feat }) => feature(`f-${slot.key}-${feat.url}`, rus(feat), slot.level, feat.description, feat.category)).join('');
 
     let spellHtml = '';
+    if (!c.spell && c.extraSpells.length) {
+      // No class spellcasting: list racial/feat spells on their own.
+      const rows = [...c.extraSpells].sort((a, b) => a.level - b.level || rus(a).localeCompare(rus(b), 'ru'));
+      spellHtml = `
+        <section class="box">
+          <h3>Врождённые заклинания</h3>
+          <table class="spellTable"><tr><th>Ур.</th><th>Название</th><th>Школа</th><th>Источник</th></tr>${rows.map(x => `
+            <tr><td>${x.level || 'з'}</td>
+              <td><button type="button" class="linkish" data-spell-info="${esc(x.url)}">${esc(rus(x))}</button></td>
+              <td>${esc(x.school || '')}</td>
+              <td><span class="tag always">${esc(x.sourceTag || '')}</span> ${esc(x.alwaysFrom || '')}</td></tr>`).join('')}</table>
+        </section>`;
+    }
     if (c.spell) {
       const sp = c.spell;
       const slotHtml = sp.pact
@@ -1329,7 +1514,7 @@
           <div class="slots">${slotHtml}</div>
           ${rows.length ? `<table class="spellTable"><tr><th>Ур.</th><th>Название</th><th>Школа</th><th>Компоненты</th></tr>${rows.map(x => `
             <tr><td>${x.level || 'з'}</td>
-              <td><button type="button" class="linkish" data-spell-info="${esc(x.url)}">${esc(rus(x))}</button>${x.concentration ? ' <span class="tag">К</span>' : ''}${x.ritual ? ' <span class="tag">Р</span>' : ''}${x.alwaysFrom ? ` <span class="tag always" title="Всегда подготовлено: ${esc(x.alwaysFrom)}">всегда</span>` : ''}</td>
+              <td><button type="button" class="linkish" data-spell-info="${esc(x.url)}">${esc(rus(x))}</button>${x.concentration ? ' <span class="tag">К</span>' : ''}${x.ritual ? ' <span class="tag">Р</span>' : ''}${x.alwaysFrom ? ` <span class="tag always" title="Всегда подготовлено: ${esc(x.alwaysFrom)}">${esc(x.sourceTag || 'всегда')}</span>` : ''}</td>
               <td>${esc(x.school || '')}</td>
               <td>${['v', 's', 'm'].filter(k => x.components?.[k]).map(k => ({ v: 'В', s: 'С', m: 'М' })[k]).join(', ')}</td></tr>`).join('')}</table>`
             : '<p class="muted">Выберите заклинания в конструкторе.</p>'}
@@ -1549,6 +1734,19 @@
   el.spellSearch.addEventListener('input', () => { spellFilter.search = el.spellSearch.value.trim(); rerenderSpells(); });
   el.spellsTab.addEventListener('change', event => {
     const t = event.target;
+    if (t.dataset.extraList) {
+      // Changing the list invalidates spells picked from the old one.
+      return setAndUpdate({ extraSpells: { ...state.extraSpells, [t.dataset.extraList]: { list: t.value, picks: {} } } });
+    }
+    if (t.dataset.extraPick) {
+      const key = t.dataset.extraPick;
+      const entry = state.extraSpells[key] || {};
+      const picks = { ...(entry.picks || {}) };
+      const list = [...(picks[t.dataset.choice] || [])];
+      list[Number(t.dataset.index)] = t.value;
+      picks[t.dataset.choice] = list;
+      return setAndUpdate({ extraSpells: { ...state.extraSpells, [key]: { ...entry, picks } } });
+    }
     if (t.dataset.spell) {
       const set = new Set(state.spells);
       t.checked ? set.add(t.dataset.spell) : set.delete(t.dataset.spell);
@@ -1754,6 +1952,7 @@
     Object.assign(data, {
       cls: null, subclasses: [], subclass: null, eff: null, species: null, lineages: [], lineage: null,
       background: null, feats: {}, featLists: { general: [], epic: [] }, spells: [], spellsKey: '', granted: [],
+      spellSources: [], spellCandidates: {},
     });
     Object.keys(rendered).forEach(k => delete rendered[k]);
     spellFilter = defaultSpellFilter();

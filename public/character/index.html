@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Лист персонажа - Mini Games</title>
+  <link rel="stylesheet" href="../theme.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <nav class="siteNav" aria-label="Main navigation">
+    <a class="siteBrand" href="/"><span class="siteBrandMark">MG</span> Mini Games</a>
+    <div class="siteNavLinks">
+      <a href="/game-of-life/">Life</a><a href="/snake/">Snake</a><a href="/elementary-ca/">Cellular</a><a href="/particle-life/">Particles</a><a href="/shitpost/">Shitpost</a><a href="/character/" aria-current="page">D&amp;D</a><a href="https://map.gregorydump.download/">Map</a><a href="/status/">Status</a>
+    </div>
+  </nav>
+
+  <main class="app">
+    <header class="appHeader">
+      <div>
+        <p class="eyebrow">D&amp;D 5e (2024) · данные TTG Club</p>
+        <h1>Конструктор персонажа</h1>
+        <p class="subhead">Выберите класс, вид, предысторию, черты и заклинания — лист персонажа пересчитывается автоматически.</p>
+      </div>
+      <div class="toolbar">
+        <output id="status" class="status" aria-live="polite">Загрузка справочников…</output>
+        <button type="button" id="newBtn">Новый</button>
+        <button type="button" id="exportBtn">Экспорт</button>
+        <label class="fileBtn">Импорт<input type="file" id="importInput" accept="application/json,.json"></label>
+        <button type="button" id="printBtn">Печать</button>
+      </div>
+    </header>
+
+    <div class="layout">
+      <form id="builder" class="builder" autocomplete="off" onsubmit="return false">
+        <section class="panel">
+          <h2>Основное</h2>
+          <label>Имя персонажа <input id="nameInput" maxlength="60" placeholder="Безымянный герой"></label>
+          <div class="row">
+            <label>Уровень <input id="levelInput" type="number" min="1" max="20" value="1"></label>
+            <label>Мировоззрение
+              <select id="alignmentSelect">
+                <option value="">—</option>
+                <option>Законно-добрый</option><option>Нейтрально-добрый</option><option>Хаотично-добрый</option>
+                <option>Законно-нейтральный</option><option>Нейтральный</option><option>Хаотично-нейтральный</option>
+                <option>Законно-злой</option><option>Нейтрально-злой</option><option>Хаотично-злой</option>
+              </select>
+            </label>
+          </div>
+          <label class="check"><input type="checkbox" id="officialOnly"> Только официальные источники</label>
+        </section>
+
+        <section class="panel">
+          <h2>Класс</h2>
+          <label>Класс <select id="classSelect"></select></label>
+          <label id="subclassField" hidden><span id="subclassLabel">Подкласс</span> <select id="subclassSelect"></select></label>
+          <p id="subclassHint" class="hint" hidden></p>
+          <div id="classSkills"></div>
+        </section>
+
+        <section class="panel">
+          <h2>Вид</h2>
+          <label>Вид <select id="speciesSelect"></select></label>
+          <label id="lineageField" hidden>Происхождение <select id="lineageSelect"></select></label>
+        </section>
+
+        <section class="panel">
+          <h2>Предыстория</h2>
+          <label>Предыстория <select id="backgroundSelect"></select></label>
+          <div id="backgroundBonus"></div>
+        </section>
+
+        <section class="panel">
+          <h2>Характеристики</h2>
+          <div class="segmented" role="radiogroup" aria-label="Способ генерации">
+            <label><input type="radio" name="abilityMethod" value="standard"> Стандартный набор</label>
+            <label><input type="radio" name="abilityMethod" value="pointbuy"> Покупка очков</label>
+            <label><input type="radio" name="abilityMethod" value="manual"> Вручную / броски</label>
+          </div>
+          <div id="abilityInputs" class="abilityInputs"></div>
+          <p id="abilityHint" class="hint"></p>
+        </section>
+
+        <section class="panel">
+          <h2>Черты</h2>
+          <div id="featSlots"></div>
+        </section>
+
+        <section class="panel" id="spellPanel" hidden>
+          <h2>Заклинания</h2>
+          <p id="spellCounts" class="hint"></p>
+          <input id="spellFilter" type="search" placeholder="Поиск заклинания…">
+          <div id="spellPicker" class="spellPicker"></div>
+        </section>
+
+        <section class="panel">
+          <h2>Снаряжение</h2>
+          <div class="row">
+            <label>Доспех <select id="armorSelect"></select></label>
+            <label class="check"><input type="checkbox" id="shieldInput"> Щит</label>
+          </div>
+          <div id="equipmentChoices"></div>
+        </section>
+
+        <section class="panel">
+          <h2>Заметки</h2>
+          <label>Языки <input id="languagesInput" maxlength="200" placeholder="Общий, …"></label>
+          <label>Заметки <textarea id="notesInput" rows="4" maxlength="4000"></textarea></label>
+        </section>
+      </form>
+
+      <article id="sheet" class="sheet" aria-live="polite"></article>
+    </div>
+  </main>
+
+  <dialog id="detailDialog" class="detailDialog">
+    <form method="dialog"><button class="closeBtn" aria-label="Закрыть">×</button></form>
+    <div id="detailBody"></div>
+  </dialog>
+
+  <script src="script.js"></script>
+</body>
+</html>

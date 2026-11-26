@@ -2,6 +2,7 @@ const express = require('express');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const { createDndProxy } = require('./dnd-proxy');
 
 const app = express();
 app.use(express.json());
@@ -422,6 +423,7 @@ api.delete('/shitposts/:postId/replies/:replyId', (req, res) => {
   res.json({ ok: true });
 });
 
+app.use('/api/dnd', createDndProxy({ cacheDir: path.join(DATA_DIR, 'dnd-cache') }));
 app.use('/api', api);
 
 let lastCpuUsage = process.cpuUsage();

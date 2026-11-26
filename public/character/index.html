@@ -47,7 +47,13 @@
               </select>
             </label>
           </div>
-          <label class="check"><input type="checkbox" id="officialOnly"> Только официальные источники</label>
+          <details class="sourcePicker" id="sourcePicker">
+            <summary>Источники: <span id="sourceSummary">все</span></summary>
+            <div class="sourceActions">
+              <button type="button" data-sources="default">PHB + TCE + XGE</button>
+              <button type="button" data-sources="all">Все</button>            </div>
+            <div id="sourceList"></div>
+          </details>
         </section>
 
         <section class="panel">

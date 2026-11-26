@@ -28,6 +28,14 @@
     ['Убеждение', 'PERSUASION', 'CHARISMA'], ['Уход за животными', 'ANIMAL_HANDLING', 'WISDOM'],
   ].map(([label, value, ability]) => ({ label, value, ability }));
 
+  // Default book filter. TCE and XGE are 2014 books that the TTG core-api does not carry
+  // (it is 2024-rules only), so they are listed but currently match nothing.
+  const DEFAULT_SOURCES = ['PHB', 'TCE', 'XGE'];
+  const EXTRA_SOURCES = [
+    { label: 'TCE', rus: 'Котёл Таши со всякой всячиной', group: { label: 'Basic', rus: 'Официальные источники' } },
+    { label: 'XGE', rus: 'Руководство Занатара обо всём', group: { label: 'Basic', rus: 'Официальные источники' } },
+  ];
+
   const STANDARD_ARRAY = [15, 14, 13, 12, 10, 8];
   const POINT_COST = { 8: 0, 9: 1, 10: 2, 11: 3, 12: 4, 13: 5, 14: 7, 15: 9 };
   const POINT_BUDGET = 27;
@@ -74,7 +82,7 @@
   function defaultState() {
     return {
       version: 1,
-      name: '', level: 1, alignment: '', officialOnly: false,
+      name: '', level: 1, alignment: '', sources: [...DEFAULT_SOURCES],
       classUrl: '', subclassUrl: '', speciesUrl: '', lineageUrl: '', backgroundUrl: '',
       abilityMethod: 'standard',
       standard: { STRENGTH: 15, DEXTERITY: 14, CONSTITUTION: 13, INTELLIGENCE: 12, WISDOM: 10, CHARISMA: 8 },
@@ -99,6 +107,11 @@
     if (!Array.isArray(s.classSkills)) s.classSkills = [];
     if (!Array.isArray(s.spells)) s.spells = [];
     if (!s.feats || typeof s.feats !== 'object') s.feats = {};
+    // Older saves had a single officialOnly flag. Keep their behaviour: filter on → default
+    // book set; filter off → all books ('*'), so nothing gets dropped from them on load.
+    s.sources = Array.isArray(raw.sources) ? raw.sources.filter(x => typeof x === 'string')
+      : raw.officialOnly ? [...DEFAULT_SOURCES] : ['*'];
+    delete s.officialOnly;
     return s;
   }
 
@@ -124,7 +137,7 @@
     return requestCache.get(path);
   }
 
-  const lists = { classes: [], species: [], backgrounds: [], skills: FALLBACK_SKILLS, damage: {}, conditions: {} };
+  const lists = { sources: [], classes: [], species: [], backgrounds: [], skills: FALLBACK_SKILLS, damage: {}, conditions: {} };
   const data = {
     cls: null, subclasses: [], subclass: null, eff: null,
     species: null, lineages: [], lineage: null,
@@ -229,8 +242,23 @@
     return out.sort((a, b) => a.level - b.level);
   }
   // TTG groups sources as Basic (official), UA (playtest) and 3rd (third-party).
-  const isOfficial = item => item?.source?.group?.label === 'Basic';
-  const isAllowed = item => !state.officialOnly || isOfficial(item);
+  // Every book offered in the picker: the API's source list plus books it lacks (TCE, XGE).
+  function knownSources() {
+    const map = new Map();
+    for (const src of lists.sources) {
+      const label = src.name?.label;
+      if (label) map.set(label, { label, rus: src.name.rus || label, group: src.source?.group || {}, noData: false });
+    }
+    for (const extra of EXTRA_SOURCES) if (!map.has(extra.label)) map.set(extra.label, { ...extra, noData: true });
+    return [...map.values()];
+  }
+  // '*' means "every book", including ones the API adds later.
+  const allSourcesSelected = () => state.sources.includes('*')
+    || knownSources().every(src => state.sources.includes(src.label));
+  const sourceTicked = label => state.sources.includes('*') || state.sources.includes(label);
+  // Items from a ticked book pass; anything else (unknown book, no label) only when every book is ticked.
+  const isAllowed = item => state.sources.includes(item?.source?.name?.label) || allSourcesSelected();
+  const sourcesKey = () => state.sources.slice().sort().join(',');
   const GROUP_ORDER = { Basic: 0, UA: 1, '3rd': 2 };
   const groupRank = item => GROUP_ORDER[item?.source?.group?.label] ?? 3;
   function featUrlFromMarkup(text) {
@@ -531,7 +559,8 @@
     if (typeof expr === 'number') return expr;
     const text = String(expr ?? '').trim();
     const map = { prof: pb, level: L, str: mods.STRENGTH, dex: mods.DEXTERITY, con: mods.CONSTITUTION, int: mods.INTELLIGENCE, wis: mods.WISDOM, cha: mods.CHARISMA, chr: mods.CHARISMA };
-    const replaced = text.replace(/@(\w+)/g, (m, k) => (k in map ? String(map[k]) : m));
+    // Accepts both "@cha" and "@mod.cha" forms used by TTG counters.
+    const replaced = text.replace(/@(?:mod\.)?(\w+)/g, (m, k) => (k in map ? String(map[k]) : m));
     if (/^[\d+\-*/ ().]+$/.test(replaced)) {
       try { return Math.max(1, Math.floor(Function(`"use strict";return (${replaced})`)())); } catch { /* fall through */ }
     }
@@ -543,7 +572,7 @@
   const $ = id => document.getElementById(id);
   const el = {
     status: $('status'), name: $('nameInput'), level: $('levelInput'), alignment: $('alignmentSelect'),
-    official: $('officialOnly'), cls: $('classSelect'), subclass: $('subclassSelect'), subclassField: $('subclassField'),
+    sourceList: $('sourceList'), sourceSummary: $('sourceSummary'), cls: $('classSelect'), subclass: $('subclassSelect'), subclassField: $('subclassField'),
     subclassLabel: $('subclassLabel'), subclassHint: $('subclassHint'), classSkills: $('classSkills'),
     species: $('speciesSelect'), lineage: $('lineageSelect'), lineageField: $('lineageField'),
     background: $('backgroundSelect'), backgroundBonus: $('backgroundBonus'),
@@ -587,7 +616,7 @@
     el.name.value = state.name;
     el.level.value = state.level;
     el.alignment.value = state.alignment;
-    el.official.checked = state.officialOnly;
+    renderSourcePicker();
     el.armor.value = state.armor;
     el.shield.checked = state.shield;
     el.languages.value = state.languages;
@@ -612,7 +641,7 @@
     if (showSub) {
       const lvl = cls.subclassLevel || 3;
       el.subclassLabel.textContent = cls.subclassLabel || 'Подкласс';
-      renderSection('subclass', `${cls.url}|${state.subclassUrl}|${state.officialOnly}`, () => {
+      renderSection('subclass', `${cls.url}|${state.subclassUrl}|${sourcesKey()}`, () => {
         el.subclass.innerHTML = optionsHtml(sortByName(subclasses), state.subclassUrl, '— не выбран —');
       });
       el.subclass.disabled = state.level < lvl;
@@ -622,7 +651,7 @@
     // Lineage
     el.lineageField.hidden = !lineages.length;
     if (lineages.length) {
-      renderSection('lineage', `${state.speciesUrl}|${state.lineageUrl}|${lineages.length}|${state.officialOnly}`, () => {
+      renderSection('lineage', `${state.speciesUrl}|${state.lineageUrl}|${lineages.length}|${sourcesKey()}`, () => {
         el.lineage.innerHTML = `<option value="">— основной вид —</option>${lineages.filter(isAllowed).map(x =>
           `<option value="${esc(x.url)}"${x.url === state.lineageUrl ? ' selected' : ''}>${esc(rus(x))}</option>`).join('')}`;
       });
@@ -711,7 +740,7 @@
   }
 
   function renderFeatSlots(c) {
-    const signature = JSON.stringify([c.slots.map(sl => [sl.key, slotFeatUrl(sl)]), state.feats, data.featLists.general.length, data.featLists.epic.length, Object.keys(data.feats).length, state.officialOnly]);
+    const signature = JSON.stringify([c.slots.map(sl => [sl.key, slotFeatUrl(sl)]), state.feats, data.featLists.general.length, data.featLists.epic.length, Object.keys(data.feats).length, sourcesKey()]);
     renderSection('feats', signature, () => {
       if (!c.slots.length) {
         el.featSlots.innerHTML = '<p class="hint">Черта появится с предысторией, дополнительные — при улучшении характеристик (обычно 4, 8, 12, 16 и 19 уровни).</p>';
@@ -752,7 +781,7 @@
     el.spellPanel.hidden = !sp;
     if (!sp) return;
     const filter = el.spellFilter.value.trim().toLowerCase();
-    renderSection('spells', `${data.spellsKey}|${sp.maxLevel}|${sp.cantripLimit}|${filter}|${state.officialOnly}`, () => {
+    renderSection('spells', `${data.spellsKey}|${sp.maxLevel}|${sp.cantripLimit}|${filter}|${sourcesKey()}`, () => {
       const groups = [];
       for (let lvl = sp.cantripLimit ? 0 : 1; lvl <= sp.maxLevel; lvl++) {
         const items = data.spells.filter(x => x.level === lvl
@@ -964,13 +993,13 @@
       if (mine !== generation) return;
       // Enforce the official-only filter on every update, not just when the checkbox is
       // clicked: a saved or imported character may already carry third-party picks.
-      const removed = state.officialOnly ? dropUnofficialChoices() : [];
+      const removed = dropDisallowedChoices();
       if (removed.length) {
         save();
         fillMainSelects();
         await loadData();
         if (mine !== generation) return;
-        setStatus(`Сброшено (неофициальные источники): ${removed.join(', ')}`);
+        setStatus(`Сброшено (нет в выбранных источниках): ${removed.join(', ')}`);
       } else {
         setStatus('Сохранено');
       }
@@ -1003,18 +1032,51 @@
     update();
   });
   el.alignment.addEventListener('change', () => setAndUpdate({ alignment: el.alignment.value }));
-  el.official.addEventListener('change', () => {
-    state.officialOnly = el.official.checked;
+  function setSources(sources) {
+    state.sources = [...new Set(sources)];
+    renderSourcePicker();
     fillMainSelects();
-    update(); // update() drops any non-official picks while the filter is on
+    update(); // update() drops picks that are no longer in the selected books
+  }
+  el.sourceList.addEventListener('change', event => {
+    const label = event.target.dataset.source;
+    if (!label) return;
+    // Expand '*' into concrete labels before removing one.
+    const current = state.sources.includes('*') ? knownSources().map(x => x.label) : state.sources;
+    setSources(event.target.checked ? [...current, label] : current.filter(x => x !== label));
   });
+  document.querySelectorAll('[data-sources]').forEach(btn => btn.addEventListener('click', () => {
+    const mode = btn.dataset.sources;
+    setSources(mode === 'all' ? ['*'] : mode === 'none' ? [] : DEFAULT_SOURCES);
+  }));
+
+  function renderSourcePicker() {
+    const groups = new Map();
+    for (const src of knownSources()) {
+      const key = src.group?.rus || 'Прочее';
+      if (!groups.has(key)) groups.set(key, { rank: GROUP_ORDER[src.group?.label] ?? 3, items: [] });
+      groups.get(key).items.push(src);
+    }
+    el.sourceList.innerHTML = [...groups].sort((a, b) => a[1].rank - b[1].rank).map(([name, g]) =>
+      `<div class="sourceGroup"><div class="choiceTitle">${esc(name)}</div><div class="chips">${
+        g.items.sort((a, b) => a.label.localeCompare(b.label)).map(src =>
+          `<label title="${esc(src.rus)}${src.noData ? ' — этой книги нет в TTG API' : ''}"><input type="checkbox" data-source="${esc(src.label)}"${sourceTicked(src.label) ? ' checked' : ''}> ${esc(src.label)}${src.noData ? ' <span class="noData">нет данных</span>' : ''}</label>`).join('')
+      }</div></div>`).join('');
+    const n = state.sources.length;
+    const noData = knownSources().filter(src => src.noData).map(src => src.label);
+    const missing = state.sources.filter(label => noData.includes(label));
+    el.sourceSummary.title = missing.length ? `${missing.join(', ')}: этих книг нет в TTG API — с них ничего не найдётся` : '';
+    el.sourceSummary.textContent = allSourcesSelected() ? 'все'
+      : n === 0 ? 'ничего не выбрано'
+      : n <= 4 ? state.sources.join(', ') : `${state.sources.slice(0, 4).join(', ')} +${n - 4}`;
+  }
 
   // With the filter on, every pick must come from an official source; a hidden-but-applied
   // third-party choice would silently keep changing the sheet.
-  function dropUnofficialChoices() {
+  function dropDisallowedChoices() {
     const removed = [];
     const find = (list, url) => list.find(x => x.url === url);
-    const bad = item => item && !isOfficial(item);
+    const bad = item => item && !isAllowed(item);
 
     const cls = find(lists.classes, state.classUrl);
     if (bad(cls)) {
@@ -1216,11 +1278,14 @@
       console.error(err);
       setStatus('TTG Club недоступен — попробуйте позже', true);
     }
-    const [skills, damage, conditions] = await Promise.all([
+    const [skills, damage, conditions, sources] = await Promise.all([
       api('dictionaries/skills').catch(() => null),
       api('dictionaries/damage/types').catch(() => []),
       api('dictionaries/conditions').catch(() => []),
+      api('sources').catch(() => []),
     ]);
+    lists.sources = Array.isArray(sources) ? sources : [];
+    renderSourcePicker();
     if (Array.isArray(skills) && skills.length) lists.skills = [...skills].sort((a, b) => a.label.localeCompare(b.label, 'ru'));
     const toDict = arr => Object.fromEntries((Array.isArray(arr) ? arr : []).map(x => [x.value, (x.label || x.name || '').toLowerCase()]));
     lists.damage = toDict(damage);

@@ -98,6 +98,15 @@ button:hover, .fileBtn:hover { border-color: var(--site-accent); color: var(--si
 .hint:empty { display: none; }
 .warn { color: #ffcf7a; }
 
+.sourcePicker { margin-top: 4px; font-size: 13px; }
+.sourcePicker summary { cursor: pointer; color: var(--site-ink); padding: 4px 0; }
+.sourcePicker summary span { color: var(--site-accent); }
+.sourceActions { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.sourceActions button { padding: 4px 8px; font-size: 12px; }
+.sourceGroup { margin-bottom: 8px; }
+.sourceGroup .choiceTitle { margin-bottom: 4px; color: var(--site-muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+.sourceList .chips label { border-radius: 6px; }
+.chips .noData { color: var(--site-muted); font-size: 10px; }
 .segmented { display: grid; gap: 4px; margin-bottom: 12px; }
 .segmented label { display: flex; align-items: center; gap: 7px; margin: 0; color: var(--site-ink); font-size: 13px; }
 

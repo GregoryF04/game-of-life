@@ -22,7 +22,13 @@ const ALLOWED_PATHS = [
   new RegExp(`^classes/${SLUG}/subclasses$`),
   new RegExp(`^species/${SLUG}/lineages$`),
   /^dictionaries\/(skills|abilities|alignments|languages|sizes|damage\/types|conditions)$/,
+  /^sources$/,
 ];
+// Paths whose upstream endpoint differs from the proxied one. The source list is a
+// read-only POST upstream (no body = "all sources").
+const UPSTREAM_ROUTES = {
+  sources: { path: 'source/search', method: 'POST' },
+};
 const ALLOWED_PARAMS = new Set(['search', 'className', 'subclassName', 'level', 'category', 'ability', 'source', 'school', 'pageSize', 'page']);
 
 function createDndProxy({ cacheDir }) {
@@ -59,7 +65,9 @@ function createDndProxy({ cacheDir }) {
   }
 
   async function fetchUpstream(key) {
-    const res = await fetch(`${UPSTREAM}/${key}`, {
+    const route = UPSTREAM_ROUTES[key] || { path: key, method: 'GET' };
+    const res = await fetch(`${UPSTREAM}/${route.path}`, {
+      method: route.method,
       headers: { accept: 'application/json', 'user-agent': 'mini-games-character-builder/1.0' },
       signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
     });

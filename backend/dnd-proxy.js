@@ -149,6 +149,10 @@ function resolveLegacy(subPath, query) {
 
 // ---------- shared cache + router ----------
 
+// Cache files are named by the hash of the request key; tools/warm-dnd-cache.js writes the
+// same format so a pre-built snapshot can be dropped into the cache directory.
+const cacheFileName = key => crypto.createHash('sha1').update(key).digest('hex') + '.json';
+
 function createCachedProxy({ cacheDir, resolve }) {
   const router = express.Router();
   const memory = new Map(); // key -> { body, fetchedAt }
@@ -163,7 +167,7 @@ function createCachedProxy({ cacheDir, resolve }) {
   }
 
   function diskFile(key) {
-    return path.join(cacheDir, crypto.createHash('sha1').update(key).digest('hex') + '.json');
+    return path.join(cacheDir, cacheFileName(key));
   }
 
   async function readDisk(key) {
@@ -247,4 +251,8 @@ function createDnd14Proxy({ cacheDir }) {
   return createCachedProxy({ cacheDir, resolve: resolveLegacy });
 }
 
-module.exports = { createDndProxy, createDnd14Proxy };
+module.exports = {
+  createDndProxy, createDnd14Proxy,
+  // for tools/warm-dnd-cache.js
+  resolveCore, resolveLegacy, requestWithRetry, cacheFileName,
+};

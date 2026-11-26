@@ -18,9 +18,9 @@
   <main class="app">
     <header class="appHeader">
       <div>
-        <p class="eyebrow">D&amp;D 5e (2024) · данные TTG Club</p>
+        <p class="eyebrow" id="editionEyebrow">D&amp;D 5e · данные TTG Club</p>
         <h1>Конструктор персонажа</h1>
-        <p class="subhead">Выберите класс, вид, предысторию, черты и заклинания — лист персонажа пересчитывается автоматически.</p>
+        <p class="subhead">Выберите класс, расу, предысторию, черты и заклинания — лист персонажа пересчитывается автоматически.</p>
       </div>
       <div class="toolbar">
         <output id="status" class="status" aria-live="polite">Загрузка справочников…</output>
@@ -35,6 +35,11 @@
       <form id="builder" class="builder" autocomplete="off" onsubmit="return false">
         <section class="panel">
           <h2>Основное</h2>
+          <div class="editionSwitch" role="radiogroup" aria-label="Редакция правил">
+            <span>Редакция</span>
+            <label><input type="radio" name="edition" value="2014"> 2014</label>
+            <label><input type="radio" name="edition" value="2024"> 2024</label>
+          </div>
           <label>Имя персонажа <input id="nameInput" maxlength="60" placeholder="Безымянный герой"></label>
           <div class="row">
             <label>Уровень <input id="levelInput" type="number" min="1" max="20" value="1"></label>
@@ -51,7 +56,8 @@
             <summary>Источники: <span id="sourceSummary">все</span></summary>
             <div class="sourceActions">
               <button type="button" data-sources="default">PHB + TCE + XGE</button>
-              <button type="button" data-sources="all">Все</button>            </div>
+              <button type="button" data-sources="all">Все</button>
+            </div>
             <div id="sourceList"></div>
           </details>
         </section>
@@ -65,9 +71,10 @@
         </section>
 
         <section class="panel">
-          <h2>Вид</h2>
-          <label>Вид <select id="speciesSelect"></select></label>
-          <label id="lineageField" hidden>Происхождение <select id="lineageSelect"></select></label>
+          <h2 id="speciesTitle">Раса</h2>
+          <label><span id="speciesLabel">Раса</span> <select id="speciesSelect"></select></label>
+          <label id="lineageField" hidden><span id="lineageLabel">Подраса</span> <select id="lineageSelect"></select></label>
+          <div id="raceBonus"></div>
         </section>
 
         <section class="panel">
@@ -124,6 +131,7 @@
     <div id="detailBody"></div>
   </dialog>
 
+  <script src="ttg2014.js"></script>
   <script src="script.js"></script>
 </body>
 </html>

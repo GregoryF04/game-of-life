@@ -1,9 +1,12 @@
 (() => {
   'use strict';
 
-  // All compendium data comes from the TTG Club core-api via our cached proxy.
-  const API = '/api/dnd/';
-  const STORAGE_KEY = 'mg-dnd-character-v1';
+  // Compendium data comes from TTG Club through our cached proxies:
+  //   2024 rules → TTG core-api (/api/dnd/), 2014 rules → legacy TTG API (/api/dnd14/).
+  // Each edition keeps its own saved character, so switching never mixes datasets.
+  const EDITION_KEY = 'mg-dnd-edition';
+  const STORAGE_KEYS = { 2024: 'mg-dnd-character-v1', 2014: 'mg-dnd-character-2014-v1' };
+  const T14 = window.TTG2014;
 
   const ABILITIES = [
     { key: 'STRENGTH', short: 'СИЛ', name: 'Сила', gen: 'Силы' },
@@ -89,6 +92,7 @@
       pointbuy: Object.fromEntries(ABILITIES.map(a => [a.key, 8])),
       manual: Object.fromEntries(ABILITIES.map(a => [a.key, 10])),
       bgMode: '2-1', bgPlus2: '', bgPlus1: '',
+      raceBonus: {}, // 2014: free ability picks per race bonus entry, { [entryIndex]: [ABILITY, ...] }
       classSkills: [],
       feats: {},
       spells: [],
@@ -107,6 +111,7 @@
     if (!Array.isArray(s.classSkills)) s.classSkills = [];
     if (!Array.isArray(s.spells)) s.spells = [];
     if (!s.feats || typeof s.feats !== 'object') s.feats = {};
+    if (!s.raceBonus || typeof s.raceBonus !== 'object') s.raceBonus = {};
     // Older saves had a single officialOnly flag. Keep their behaviour: filter on → default
     // book set; filter off → all books ('*'), so nothing gets dropped from them on load.
     s.sources = Array.isArray(raw.sources) ? raw.sources.filter(x => typeof x === 'string')
@@ -115,29 +120,152 @@
     return s;
   }
 
-  let state = defaultState();
-  try { state = normalizeState(JSON.parse(localStorage.getItem(STORAGE_KEY))); } catch { /* fresh start */ }
+  let edition = '2014';
+  try { if (localStorage.getItem(EDITION_KEY) === '2024') edition = '2024'; } catch { /* storage blocked */ }
+
+  function loadState(ed) {
+    try { return normalizeState(JSON.parse(localStorage.getItem(STORAGE_KEYS[ed]))); } catch { return defaultState(); }
+  }
+  let state = loadState(edition);
 
   function save() {
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch { /* storage blocked */ }
+    try {
+      localStorage.setItem(STORAGE_KEYS[edition], JSON.stringify(state));
+      localStorage.setItem(EDITION_KEY, edition);
+    } catch { /* storage blocked */ }
   }
 
   // ---------- data ----------
 
   const requestCache = new Map();
-  function api(path) {
-    if (!requestCache.has(path)) {
-      const p = fetch(API + path).then(r => {
+  function fetchJson(url) {
+    if (!requestCache.has(url)) {
+      const p = fetch(url).then(r => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();
       });
-      p.catch(() => requestCache.delete(path));
-      requestCache.set(path, p);
+      p.catch(() => requestCache.delete(url));
+      requestCache.set(url, p);
     }
-    return requestCache.get(path);
+    return requestCache.get(url);
   }
+  const api = path => fetchJson(P.base + path);
 
-  const lists = { sources: [], classes: [], species: [], backgrounds: [], skills: FALLBACK_SKILLS, damage: {}, conditions: {} };
+  // 2014 "ability score improvement" is a choice between +2/+1+1 and a feat; we offer it
+  // as a pseudo-feat so the same slot UI and bonus resolution handle both editions.
+  const ASI_FEAT = {
+    url: '__asi',
+    name: { rus: 'Увеличение характеристик' },
+    category: 'Увеличение характеристик',
+    description: ['Повысьте одну характеристику на 2 или две характеристики на 1 (не выше 20).'],
+    mechanics: {
+      abilityBonuses: [
+        { abilities: ABILITIES.map(a => a.key), bonus: 2, upto: 20, count: 1 },
+        { abilities: ABILITIES.map(a => a.key), bonus: 1, upto: 20, count: 2 },
+      ],
+    },
+  };
+
+  // An edition provider hides each API's shape behind one interface.
+  const PROVIDERS = {
+    2024: {
+      base: '/api/dnd/',
+      eyebrow: 'D&D 5e (2024) · данные TTG Club',
+      labels: { species: 'Вид', lineage: 'Происхождение', noLineage: '— основной вид —', speciesPlaceholder: '— выберите вид —' },
+      rules: { bgAbilityBonus: true, raceAbilityBonus: false, originFeat: true, asiPseudoFeat: false },
+      async loadLists() {
+        const [classes, species, backgrounds, skills, sources] = await Promise.all([
+          api('classes/search'), api('species/search'), api('backgrounds/search'),
+          api('dictionaries/skills').catch(() => null), api('sources').catch(() => []),
+        ]);
+        const sourceList = (Array.isArray(sources) ? sources : []).filter(x => x.name?.label)
+          .map(x => ({ label: x.name.label, rus: x.name.rus || x.name.label, group: x.source?.group || {}, noData: false }));
+        for (const extra of EXTRA_SOURCES) {
+          if (!sourceList.some(x => x.label === extra.label)) sourceList.push({ ...extra, noData: true });
+        }
+        return {
+          classes: sortByName(classes), species: sortByName(species), backgrounds: sortByName(backgrounds),
+          skills: Array.isArray(skills) && skills.length ? [...skills].sort((a, b) => a.label.localeCompare(b.label, 'ru')) : FALLBACK_SKILLS,
+          sourceList,
+        };
+      },
+      loadClass: url => api(`classes/${url}`),
+      subclasses: cls => api(`classes/${cls.url}/subclasses`).catch(() => []),
+      loadSubclass: url => api(`classes/${url}`), // already merges the parent's features
+      loadSpecies: url => api(`species/${url}`),
+      lineages: short => (short?.hasLineages ? api(`species/${short.url}/lineages`).catch(() => []) : []),
+      loadLineage: async (url, lineages) => lineages.find(x => x.url === url) || null,
+      loadBackground: url => api(`backgrounds/${url}`),
+      async featLists(needEpic) {
+        const [general, epic] = await Promise.all([
+          api('feats/search?category=GENERAL').catch(() => []),
+          needEpic ? api('feats/search?category=EPIC_BOON').catch(() => []) : [],
+        ]);
+        return { general: sortByName(general), epic: sortByName(epic) };
+      },
+      loadFeat: url => api(`feats/${url}`),
+      spellListKey({ cls, subclass, eff }) {
+        if (!eff || !isCasterType(eff.casterType)) return '';
+        // Subclass-only casters (Eldritch Knight, Arcane Trickster) have their own spell list on TTG.
+        if (subclass && !isCasterType(cls.casterType)) return `spells/search?subclassName=${subclass.url}`;
+        return `spells/search?className=${cls.url}`;
+      },
+      loadSpells: async key => sortByName(await api(key)),
+      loadSpell: url => api(`spells/${url}`),
+    },
+    2014: {
+      base: '/api/dnd14/',
+      eyebrow: 'D&D 5e (2014) · данные TTG Club (5e14)',
+      labels: { species: 'Раса', lineage: 'Подраса', noLineage: '— без подрасы —', speciesPlaceholder: '— выберите расу —' },
+      rules: { bgAbilityBonus: false, raceAbilityBonus: true, originFeat: false, asiPseudoFeat: true },
+      async loadLists() {
+        const [classes, races, backgrounds, feats] = await Promise.all([
+          api('classes'), api('races'), api('backgrounds'), api('traits').catch(() => []),
+        ]);
+        const out = {
+          classes: sortByName(classes.map(T14.normalizeClassShort)),
+          species: sortByName(races.map(T14.normalizeRaceShort)),
+          backgrounds: sortByName(backgrounds.map(T14.normalizeBackgroundShort)),
+          feats: sortByName((Array.isArray(feats) ? feats : []).map(T14.normalizeFeatShort)),
+          skills: T14.SKILLS,
+        };
+        // The legacy API has no source list; collect every book its content refers to.
+        const seen = new Map();
+        const add = item => {
+          const label = item?.source?.name?.label;
+          if (label && !seen.has(label)) seen.set(label, { label, rus: item.source.name.rus || label, group: item.source.group || {}, noData: false });
+        };
+        out.classes.forEach(c => { add(c); c.archetypes.forEach(add); });
+        out.species.forEach(r => { add(r); r.subraces.forEach(add); });
+        out.backgrounds.forEach(add);
+        out.feats.forEach(add);
+        out.sourceList = [...seen.values()];
+        return out;
+      },
+      async loadClass(url) { return T14.normalizeClass(await api(`classes/${url}`), null, url); },
+      subclasses: async cls => lists.classes.find(c => c.url === cls.url)?.archetypes || [],
+      async loadSubclass(url) {
+        const parentUrl = url.split('/')[0];
+        const [detail, parent] = await Promise.all([api(`classes/${url}`), api(`classes/${parentUrl}`)]);
+        return T14.normalizeClass(detail, parent, url);
+      },
+      async loadSpecies(url) { return T14.normalizeRace(await api(`races/${url}`), url); },
+      lineages: async short => short?.subraces || [],
+      async loadLineage(url) { return T14.normalizeRace(await api(`races/${url}`), url); },
+      async loadBackground(url) { return T14.normalizeBackground(await api(`backgrounds/${url}`)); },
+      featLists: async () => ({ general: lists.feats || [], epic: [] }),
+      async loadFeat(url) { return T14.normalizeFeat(await api(`traits/${url}`), url); },
+      spellListKey({ eff }) {
+        if (!eff || !isCasterType(eff.casterType) || !eff.spellListClassId) return '';
+        return `spells?class=${eff.spellListClassId}`;
+      },
+      loadSpells: async key => sortByName((await api(key)).map(T14.normalizeSpellShort)),
+      async loadSpell(url) { return T14.normalizeSpell(await api(`spells/${url}`)); },
+    },
+  };
+  let P = PROVIDERS[edition];
+
+  const lists = { sources: [], sourceList: [], classes: [], species: [], backgrounds: [], feats: [], skills: FALLBACK_SKILLS, damage: {}, conditions: {} };
   const data = {
     cls: null, subclasses: [], subclass: null, eff: null,
     species: null, lineages: [], lineage: null,
@@ -148,52 +276,43 @@
   async function loadData() {
     const s = state;
     const speciesShort = lists.species.find(x => x.url === s.speciesUrl);
-    const [cls, subclasses, species, lineages, background] = await Promise.all([
-      s.classUrl ? api(`classes/${s.classUrl}`) : null,
-      s.classUrl ? api(`classes/${s.classUrl}/subclasses`).catch(() => []) : [],
-      s.speciesUrl ? api(`species/${s.speciesUrl}`) : null,
-      speciesShort && speciesShort.hasLineages ? api(`species/${s.speciesUrl}/lineages`).catch(() => []) : [],
-      s.backgroundUrl ? api(`backgrounds/${s.backgroundUrl}`) : null,
+    const [cls, species, lineages, background] = await Promise.all([
+      s.classUrl ? P.loadClass(s.classUrl) : null,
+      s.speciesUrl ? P.loadSpecies(s.speciesUrl) : null,
+      speciesShort ? P.lineages(speciesShort) : [],
+      s.backgroundUrl ? P.loadBackground(s.backgroundUrl) : null,
     ]);
+    const subclasses = cls ? await P.subclasses(cls) : [];
     data.cls = cls;
     data.subclasses = Array.isArray(subclasses) ? subclasses : [];
     data.species = species;
     data.lineages = Array.isArray(lineages) ? lineages : [];
-    data.lineage = data.lineages.find(x => x.url === s.lineageUrl) || null;
+    data.lineage = s.lineageUrl && data.lineages.some(x => x.url === s.lineageUrl)
+      ? await P.loadLineage(s.lineageUrl, data.lineages) : null;
     data.background = background;
 
     const subclassOpen = cls && s.subclassUrl && s.level >= (cls.subclassLevel || 3)
       && data.subclasses.some(x => x.url === s.subclassUrl);
-    data.subclass = subclassOpen ? await api(`classes/${s.subclassUrl}`) : null;
+    data.subclass = subclassOpen ? await P.loadSubclass(s.subclassUrl) : null;
     // Subclass detail already merges the parent's features and carries its own casting table.
     data.eff = data.subclass || cls;
 
     const slots = featSlots();
-    const featUrls = [...new Set(slots.map(slot => slotFeatUrl(slot)).filter(Boolean))];
-    const needGeneral = slots.some(x => !x.fixed);
-    const needEpic = slots.some(x => x.epic);
-    const [general, epic, ...featDetails] = await Promise.all([
-      needGeneral ? api('feats/search?category=GENERAL').catch(() => []) : [],
-      needEpic ? api('feats/search?category=EPIC_BOON').catch(() => []) : [],
-      ...featUrls.map(url => api(`feats/${url}`).catch(() => null)),
+    const featUrls = [...new Set(slots.map(slot => slotFeatUrl(slot)).filter(url => url && url !== ASI_FEAT.url))];
+    const needLists = slots.some(x => !x.fixed);
+    const [featLists, ...featDetails] = await Promise.all([
+      needLists ? P.featLists(slots.some(x => x.epic)) : { general: [], epic: [] },
+      ...featUrls.map(url => P.loadFeat(url).catch(() => null)),
     ]);
-    data.featLists = { general: sortByName(general), epic: sortByName(epic) };
-    data.feats = {};
+    data.featLists = featLists;
+    data.feats = { [ASI_FEAT.url]: ASI_FEAT };
     featUrls.forEach((url, i) => { if (featDetails[i]) data.feats[url] = featDetails[i]; });
 
-    const spellKey = spellListKey();
+    const spellKey = P.spellListKey(data);
     if (spellKey !== data.spellsKey) {
-      data.spells = spellKey ? sortByName(await api(spellKey)) : [];
+      data.spells = spellKey ? await P.loadSpells(spellKey) : [];
       data.spellsKey = spellKey;
     }
-  }
-
-  function spellListKey() {
-    const { cls, subclass, eff } = data;
-    if (!eff || !isCasterType(eff.casterType)) return '';
-    // Subclass-only casters (Eldritch Knight, Arcane Trickster) have their own spell list on TTG.
-    if (subclass && !isCasterType(cls.casterType)) return `spells/search?subclassName=${subclass.url}`;
-    return `spells/search?className=${cls.url}`;
   }
 
   // ---------- helpers ----------
@@ -241,17 +360,9 @@
     }
     return out.sort((a, b) => a.level - b.level);
   }
-  // TTG groups sources as Basic (official), UA (playtest) and 3rd (third-party).
-  // Every book offered in the picker: the API's source list plus books it lacks (TCE, XGE).
-  function knownSources() {
-    const map = new Map();
-    for (const src of lists.sources) {
-      const label = src.name?.label;
-      if (label) map.set(label, { label, rus: src.name.rus || label, group: src.source?.group || {}, noData: false });
-    }
-    for (const extra of EXTRA_SOURCES) if (!map.has(extra.label)) map.set(extra.label, { ...extra, noData: true });
-    return [...map.values()];
-  }
+  // TTG groups sources as Basic (official), UA (playtest), 3rd (third-party) and, on the
+  // legacy site, HB (homebrew). The book list comes from the current edition's provider.
+  const knownSources = () => lists.sourceList;
   // '*' means "every book", including ones the API adds later.
   const allSourcesSelected = () => state.sources.includes('*')
     || knownSources().every(src => state.sources.includes(src.label));
@@ -259,7 +370,7 @@
   // Items from a ticked book pass; anything else (unknown book, no label) only when every book is ticked.
   const isAllowed = item => state.sources.includes(item?.source?.name?.label) || allSourcesSelected();
   const sourcesKey = () => state.sources.slice().sort().join(',');
-  const GROUP_ORDER = { Basic: 0, UA: 1, '3rd': 2 };
+  const GROUP_ORDER = { Basic: 0, UA: 1, '3rd': 2, HB: 3 };
   const groupRank = item => GROUP_ORDER[item?.source?.group?.label] ?? 3;
   function featUrlFromMarkup(text) {
     const m = /url:([a-z0-9-]+)/.exec(text || '');
@@ -279,6 +390,16 @@
           case 'b': return `<strong>${body}</strong>`;
           case 'i': return `<em>${body}</em>`;
           case 'dice': return `<span class="dice">${text}</span>`;
+          // Legacy (2014) markup
+          case 'h': return `<strong>${text}</strong>`;
+          case 'list': return `<span class="mdList">${body}</span>`;
+          case 'li': return `<span class="mdItem">${body}</span>`;
+          case 'quote': return `<em>${body}</em>`;
+          case 'p': return body.split('|')[0];
+          case 'roll': { const m = /text:\s*([^|]*)/.exec(body); return `<span class="dice">${(m ? m[1] : text).trim()}</span>`; }
+          case 'table': return `<span class="mdTable">${body}</span>`;
+          case 'tr': return `<span class="mdRow">${body}</span>`;
+          case 'td': case 'th': return `<span class="mdCell">${text}</span>`;
           case 'spell': case 'feat': case 'item': case 'creature': case 'magicItem':
             return `<span class="ref">${text}</span>`;
           default: return text;
@@ -330,7 +451,11 @@
 
   function featSlots() {
     const slots = [];
-    if (state.backgroundUrl) {
+    // 2014: a race trait named «Черта» (variant human) grants a free feat at level 1.
+    if (data.lineage?.grantsFeat || data.species?.grantsFeat) {
+      slots.push({ key: 'race', level: 1, title: `Черта расы (${rus(data.lineage || data.species)})` });
+    }
+    if (P.rules.originFeat && state.backgroundUrl) {
       const short = lists.backgrounds.find(b => b.url === state.backgroundUrl);
       const fixed = short?.featUrl || featUrlFromMarkup(data.background?.feat);
       if (fixed) slots.push({ key: 'origin', level: 1, title: 'Черта предыстории', fixed });
@@ -343,12 +468,36 @@
       let key = `lvl${f.level}`;
       while (seen.has(key)) key += 'b';
       seen.add(key);
-      slots.push({ key, level: f.level, title: `${f.name} · ${f.level} ур.`, epic });
+      // 2014: the slot is "ASI or a feat" and defaults to the ASI.
+      slots.push({ key, level: f.level, title: `${f.name} · ${f.level} ур.`, epic, asi: P.rules.asiPseudoFeat });
     }
     return slots;
   }
   function slotFeatUrl(slot) {
-    return slot.fixed || state.feats[slot.key]?.url || '';
+    if (slot.fixed) return slot.fixed;
+    const picked = state.feats[slot.key];
+    if (picked && typeof picked.url === 'string' && (picked.url || !slot.asi)) return picked.url;
+    return slot.asi ? ASI_FEAT.url : '';
+  }
+
+  // 2014 race ability bonuses: cumulative entries; an entry with more candidates than its
+  // count is a free choice the player makes ({ abilities, bonus, count }).
+  function raceBonusPlan() {
+    const race = data.lineage || data.species;
+    if (!P.rules.raceAbilityBonus || !race?.abilityBonuses) return [];
+    return race.abilityBonuses.map((entry, index) => {
+      const candidates = entry.abilities || [];
+      const count = entry.count || 1;
+      let chosen;
+      if (candidates.length <= count) chosen = [...candidates];
+      else {
+        chosen = [];
+        for (const a of state.raceBonus[index] || []) {
+          if (candidates.includes(a) && !chosen.includes(a) && chosen.length < count) chosen.push(a);
+        }
+      }
+      return { index, candidates, count, bonus: entry.bonus, chosen, free: candidates.length > count };
+    });
   }
 
   function baseScores() {
@@ -398,7 +547,11 @@
     const scores = { ...base };
     const sources = Object.fromEntries(ABILITIES.map(a => [a.key, []]));
     const bgAbils = backgroundAbilities();
-    if (background) {
+    const racePlan = raceBonusPlan();
+    for (const entry of racePlan) {
+      for (const k of entry.chosen) { scores[k] += entry.bonus; sources[k].push(`${signed(entry.bonus)} раса`); }
+    }
+    if (P.rules.bgAbilityBonus && background) {
       if (s.bgMode === '1-1-1') {
         bgAbils.slice(0, 3).forEach(k => { scores[k] += 1; sources[k].push('+1 предыстория'); });
       } else {
@@ -421,13 +574,16 @@
     // Structured mechanics from class/subclass features, species traits and feats.
     const mech = {
       hp: 0, senses: {}, resist: new Set(), immune: new Set(), vuln: new Set(), condImm: new Set(),
-      initPB: false, skills: new Set(), saves: new Set(), counters: [],
+      initPB: false, initBonus: 0, passiveBonus: 0, skills: new Set(), saves: new Set(), counters: [],
     };
     const addMech = (m, acquired, from) => {
       if (!m) return;
       const mo = m.modifiers || {};
       if (mo.hitPoints && (mo.hitPoints.perAcquisitionLevel || mo.hitPoints.perLevelAfterAcquisition)) {
-        mech.hp += (mo.hitPoints.perAcquisitionLevel || 0) + (mo.hitPoints.perLevelAfterAcquisition || 0) * Math.max(0, L - acquired);
+        // "perAcquisitionLevel" is per character level at the moment the trait is gained
+        // (Tough at level 4 gives +8 at once), then "perLevelAfterAcquisition" for each later level.
+        const gained = Math.min(acquired, L);
+        mech.hp += (mo.hitPoints.perAcquisitionLevel || 0) * gained + (mo.hitPoints.perLevelAfterAcquisition || 0) * Math.max(0, L - gained);
       }
       for (const sense of mo.senses || []) {
         if (sense?.type) mech.senses[sense.type] = Math.max(mech.senses[sense.type] || 0, sense.range || 0);
@@ -437,6 +593,8 @@
       (mo.damage?.vulnerabilities || []).forEach(x => mech.vuln.add(x));
       (mo.conditionImmunities || []).forEach(x => mech.condImm.add(typeof x === 'string' ? x : x?.type));
       if (mo.initiativeProficiencyBonus) mech.initPB = true;
+      mech.initBonus += Number(mo.initiativeBonus) || 0;
+      mech.passiveBonus += Number(mo.passivePerceptionBonus) || 0;
       const prof = m.proficiencies || {};
       (prof.skills || []).forEach(x => typeof x === 'string' && mech.skills.add(x));
       (prof.savingThrows || []).forEach(x => typeof x === 'string' && mech.saves.add(x));
@@ -451,6 +609,9 @@
     const speciesFeatures = [...(species?.features || []), ...(lineage?.features || [])]
       .filter(f => (f.level || 1) <= L);
     speciesFeatures.forEach(f => addMech(f.mechanics, f.level || 1, rus(f)));
+    // 2014 races keep senses / HP bonuses on the race itself rather than on a trait.
+    addMech(species?.mechanics, 1, rus(species));
+    addMech(lineage?.mechanics, 1, rus(lineage));
     const feats = [];
     for (const slot of slots) {
       const url = slotFeatUrl(slot);
@@ -466,7 +627,8 @@
     const saves = new Set([...(cls?.savingThrowAbilities || []), ...mech.saves]);
     const skillData = cls?.proficiency?.skillData;
     const bgSkillText = background?.skillProficiencies || '';
-    const bgSkills = bgSkillText.split(/,\s*/).map(skillByLabel).filter(Boolean).map(x => x.value);
+    const bgSkills = background?.skillValues
+      || bgSkillText.split(/,\s*/).map(skillByLabel).filter(Boolean).map(x => x.value);
     const classSkills = (s.classSkills || [])
       .filter(x => skillData?.skills?.includes(x) && !bgSkills.includes(x))
       .slice(0, skillData?.count || 0);
@@ -487,8 +649,10 @@
     let ac;
     let acNote = armor.id === 'none' ? 'без доспехов' : armor.name.replace(/\s*\(.*\)/, '');
     const hasUnarmoredDefense = classFeatures.some(f => /защита без доспехов/i.test(f.name || ''));
+    const hasDraconicResilience = classFeatures.some(f => /драконья устойчивость/i.test(f.name || ''));
     if (armor.id === 'none') {
       ac = 10 + mods.DEXTERITY;
+      if (hasDraconicResilience) { ac = 13 + mods.DEXTERITY; acNote = 'драконья устойчивость'; }
       if (hasUnarmoredDefense && cls?.url?.startsWith('barbarian')) { ac += mods.CONSTITUTION; acNote = 'защита без доспехов'; }
       if (hasUnarmoredDefense && cls?.url?.startsWith('monk') && !s.shield) { ac += mods.WISDOM; acNote = 'защита без доспехов'; }
     } else {
@@ -505,7 +669,12 @@
       let slotsRow = [];
       let pact = null;
       if (eff.casterType === 'PACT') {
-        pact = { count: PACT_SLOT_COUNT[L - 1], level: Math.min(5, Math.ceil(L / 2)) };
+        // 2014 warlock tables carry slot count/level columns; otherwise use the standard table.
+        const count = Number(scalingValue(tableColumn(eff, 'PACT_SLOTS'), L)) || PACT_SLOT_COUNT[L - 1];
+        const level = Number(scalingValue(tableColumn(eff, 'PACT_LEVEL'), L)) || Math.min(5, Math.ceil(L / 2));
+        pact = { count, level };
+      } else if (eff.slotTable) {
+        slotsRow = eff.slotTable[L - 1] || []; // 2014: slots straight from the class table
       } else {
         const divisor = eff.casterType === 'HALF' ? 2 : eff.casterType === 'THIRD' ? 3 : 1;
         slotsRow = FULL_SLOTS[Math.max(1, Math.ceil(L / divisor)) - 1] || [];
@@ -514,22 +683,29 @@
       const abilityKey = eff.spellcastingAbility;
       const abilityMod = mods[abilityKey] ?? 0;
       const cantripLimit = Number(scalingValue(tableColumn(eff, 'CANTRIPS_KNOWN'), L)) || 0;
+      // Limit on levelled spells: 2024 "prepared" column, 2014 "known" column, or the
+      // 2014 prepared-caster formula (ability mod + class level, halved for half casters).
       const preparedRaw = scalingValue(tableColumn(eff, 'PREPARED_SPELLS'), L);
-      const preparedLimit = preparedRaw == null ? null : Number(preparedRaw) || 0;
+      const knownRaw = scalingValue(tableColumn(eff, 'SPELLS_KNOWN'), L);
+      let preparedLimit = null;
+      let limitLabel = 'Подготовлено';
+      if (preparedRaw != null) preparedLimit = Number(preparedRaw) || 0;
+      else if (knownRaw != null) { preparedLimit = Number(knownRaw) || 0; limitLabel = 'Известно'; }
+      else if (eff.edition === '2014') preparedLimit = Math.max(1, abilityMod + (eff.preparedHalfLevel ? Math.floor(L / 2) : L));
       const chosen = data.spells.filter(sp => s.spells.includes(sp.url));
       const cantrips = chosen.filter(sp => sp.level === 0);
       const leveled = chosen.filter(sp => sp.level > 0 && sp.level <= maxLevel);
       spell = {
         type: eff.casterType, abilityKey, abilityMod,
         dc: 8 + pb + abilityMod, attack: pb + abilityMod,
-        slotsRow, pact, maxLevel, cantripLimit, preparedLimit, cantrips, leveled,
+        slotsRow, pact, maxLevel, cantripLimit, preparedLimit, limitLabel, cantrips, leveled,
       };
     }
 
     // Class resources: every non-spell column of the class table, plus counters from mechanics.
     const resources = [];
     for (const col of eff?.table || []) {
-      if (col.purpose === 'CANTRIPS_KNOWN' || col.purpose === 'PREPARED_SPELLS') continue;
+      if (['CANTRIPS_KNOWN', 'PREPARED_SPELLS', 'SPELLS_KNOWN', 'PACT_SLOTS', 'PACT_LEVEL'].includes(col.purpose)) continue;
       const v = scalingValue(col, L);
       if (v != null && v !== '' && v !== '—' && v !== '-') resources.push({ name: col.name, value: v });
     }
@@ -549,7 +725,8 @@
       L, pb, base, scores, mods, sources, bgAbils, slots, feats,
       saves, skills, bgSkills, classSkills, skillData,
       hp, hd, ac, acNote, warnings,
-      init: mods.DEXTERITY + (mech.initPB ? pb : 0), initPB: mech.initPB,
+      init: mods.DEXTERITY + (mech.initPB ? pb : 0) + mech.initBonus, initPB: mech.initPB,
+      racePlan,
       speed: props.movement?.base || 30, movement: props.movement || {}, size: props.size, creatureType: props.type,
       mech, classFeatures, speciesFeatures, spell, resources,
     };
@@ -575,6 +752,8 @@
     sourceList: $('sourceList'), sourceSummary: $('sourceSummary'), cls: $('classSelect'), subclass: $('subclassSelect'), subclassField: $('subclassField'),
     subclassLabel: $('subclassLabel'), subclassHint: $('subclassHint'), classSkills: $('classSkills'),
     species: $('speciesSelect'), lineage: $('lineageSelect'), lineageField: $('lineageField'),
+    speciesTitle: $('speciesTitle'), speciesLabel: $('speciesLabel'), lineageLabel: $('lineageLabel'), raceBonus: $('raceBonus'),
+    eyebrow: $('editionEyebrow'),
     background: $('backgroundSelect'), backgroundBonus: $('backgroundBonus'),
     abilityInputs: $('abilityInputs'), abilityHint: $('abilityHint'), featSlots: $('featSlots'),
     spellPanel: $('spellPanel'), spellCounts: $('spellCounts'), spellFilter: $('spellFilter'), spellPicker: $('spellPicker'),
@@ -608,11 +787,16 @@
 
   function fillMainSelects() {
     el.cls.innerHTML = optionsHtml(lists.classes, state.classUrl, '— выберите класс —');
-    el.species.innerHTML = optionsHtml(lists.species, state.speciesUrl, '— выберите вид —');
+    el.species.innerHTML = optionsHtml(lists.species, state.speciesUrl, P.labels.speciesPlaceholder);
     el.background.innerHTML = optionsHtml(lists.backgrounds, state.backgroundUrl, '— выберите предысторию —');
   }
 
   function syncStaticInputs() {
+    document.querySelectorAll('input[name="edition"]').forEach(r => { r.checked = r.value === edition; });
+    el.eyebrow.textContent = P.eyebrow;
+    el.speciesTitle.textContent = P.labels.species;
+    el.speciesLabel.textContent = P.labels.species;
+    el.lineageLabel.textContent = P.labels.lineage;
     el.name.value = state.name;
     el.level.value = state.level;
     el.alignment.value = state.alignment;
@@ -652,7 +836,7 @@
     el.lineageField.hidden = !lineages.length;
     if (lineages.length) {
       renderSection('lineage', `${state.speciesUrl}|${state.lineageUrl}|${lineages.length}|${sourcesKey()}`, () => {
-        el.lineage.innerHTML = `<option value="">— основной вид —</option>${lineages.filter(isAllowed).map(x =>
+        el.lineage.innerHTML = `<option value="">${esc(P.labels.noLineage)}</option>${lineages.filter(isAllowed).map(x =>
           `<option value="${esc(x.url)}"${x.url === state.lineageUrl ? ' selected' : ''}>${esc(rus(x))}</option>`).join('')}`;
       });
     }
@@ -680,9 +864,27 @@
       if (title) title.textContent = `Навыки класса: выбрано ${c.classSkills.length} из ${count}`;
     }
 
-    // Background bonuses
-    renderSection('bg', `${background?.url}|${state.bgMode}|${c.bgAbils.join()}`, () => {
+    // Race ability bonuses (2014): fixed ones are listed, free ones get pickers.
+    renderSection('raceBonus', JSON.stringify([state.speciesUrl, state.lineageUrl, state.raceBonus, c.racePlan.length]), () => {
+      if (!c.racePlan.length) { el.raceBonus.innerHTML = ''; return; }
+      const fixed = c.racePlan.filter(e => !e.free)
+        .map(e => e.candidates.map(k => `${ABILITY[k]?.name} ${signed(e.bonus)}`).join(', ')).filter(Boolean);
+      const pickers = c.racePlan.filter(e => e.free).map(e =>
+        Array.from({ length: e.count }, (_, i) => `<select data-race-pick="${e.index}" data-index="${i}"><option value="">${signed(e.bonus)} к …</option>${e.candidates.map(k =>
+          `<option value="${k}"${e.chosen[i] === k ? ' selected' : ''}>${ABILITY[k]?.name}</option>`).join('')}</select>`).join('')).join('');
+      el.raceBonus.innerHTML = `<p class="hint">Бонусы характеристик: ${esc(fixed.join(', ') || '—')}</p>${pickers ? `<div class="bonusPicks">${pickers}</div>` : ''}`;
+    });
+
+    // Background: 2024 gives ability bonuses + an origin feat; 2014 gives skills and a feature.
+    renderSection('bg', `${edition}|${background?.url}|${state.bgMode}|${c.bgAbils.join()}`, () => {
       if (!background) { el.backgroundBonus.innerHTML = ''; return; }
+      if (!P.rules.bgAbilityBonus) {
+        el.backgroundBonus.innerHTML = `<p class="hint">Навыки: ${esc(background.skillProficiencies || '—')}${
+          background.toolMarkup?.length ? `<br>Инструменты: ${background.toolMarkup.map(inline).join(', ')}` : ''}${
+          background.language ? `<br>Языки: ${esc(background.language)}` : ''}${
+          background.featureName ? `<br>Умение: ${esc(background.featureName)}` : ''}</p>`;
+        return;
+      }
       const abilOpts = sel => `<option value="">—</option>${c.bgAbils.map(k =>
         `<option value="${k}"${k === sel ? ' selected' : ''}>${ABILITY[k].name}</option>`).join('')}`;
       el.backgroundBonus.innerHTML = `
@@ -743,7 +945,9 @@
     const signature = JSON.stringify([c.slots.map(sl => [sl.key, slotFeatUrl(sl)]), state.feats, data.featLists.general.length, data.featLists.epic.length, Object.keys(data.feats).length, sourcesKey()]);
     renderSection('feats', signature, () => {
       if (!c.slots.length) {
-        el.featSlots.innerHTML = '<p class="hint">Черта появится с предысторией, дополнительные — при улучшении характеристик (обычно 4, 8, 12, 16 и 19 уровни).</p>';
+        el.featSlots.innerHTML = P.rules.originFeat
+          ? '<p class="hint">Черта появится с предысторией, дополнительные — при улучшении характеристик (обычно 4, 8, 12, 16 и 19 уровни).</p>'
+          : '<p class="hint">На уровнях увеличения характеристик (обычно 4, 8, 12, 16 и 19) можно повысить характеристики или взять черту.</p>';
         return;
       }
       el.featSlots.innerHTML = c.slots.map(slot => {
@@ -753,11 +957,14 @@
         if (slot.fixed) {
           picker = `<div>${feat ? `<button type="button" class="linkish" data-feat-info="${esc(url)}">${esc(rus(feat))}</button>` : esc(url)}</div>`;
         } else {
-          const groups = slot.epic ? [['Эпические черты', data.featLists.epic], ['Общие черты', data.featLists.general]] : [['Общие черты', data.featLists.general]];
-          picker = `<select data-feat-slot="${slot.key}"><option value="">— выберите черту —</option>${groups.map(([label, items]) =>
+          const groups = slot.epic ? [['Эпические черты', data.featLists.epic], ['Общие черты', data.featLists.general]]
+            : [[P.rules.originFeat ? 'Общие черты' : 'Черты', data.featLists.general]];
+          const asiOption = slot.asi
+            ? `<option value="${ASI_FEAT.url}"${url === ASI_FEAT.url ? ' selected' : ''}>Увеличение характеристик (+2 или +1/+1)</option>` : '';
+          picker = `<select data-feat-slot="${slot.key}"><option value="">— выберите черту —</option>${asiOption}${groups.map(([label, items]) =>
             `<optgroup label="${label}">${items.filter(isAllowed).map(f =>
               `<option value="${esc(f.url)}"${f.url === url ? ' selected' : ''}>${esc(rus(f))} [${esc(f.source?.name?.label || '')}]</option>`).join('')}</optgroup>`).join('')}</select>
-            ${feat ? `<button type="button" class="linkish" data-feat-info="${esc(url)}">Описание</button>` : ''}`;
+            ${feat && url !== ASI_FEAT.url ? `<button type="button" class="linkish" data-feat-info="${esc(url)}">Описание</button>` : ''}`;
         }
         const plan = featBonusPlan(slot);
         let bonus = '';
@@ -805,7 +1012,7 @@
     });
     const parts = [];
     if (sp.cantripLimit) parts.push(`Заговоры: ${sp.cantrips.length} / ${sp.cantripLimit}`);
-    parts.push(sp.preparedLimit != null ? `Подготовлено: ${sp.leveled.length} / ${sp.preparedLimit}` : `Подготовлено: ${sp.leveled.length}`);
+    parts.push(sp.preparedLimit != null ? `${sp.limitLabel}: ${sp.leveled.length} / ${sp.preparedLimit}` : `${sp.limitLabel}: ${sp.leveled.length}`);
     parts.push(`макс. уровень заклинаний: ${sp.maxLevel}`);
     const over = sp.cantrips.length > sp.cantripLimit || (sp.preparedLimit != null && sp.leveled.length > sp.preparedLimit);
     el.spellCounts.innerHTML = parts.join(' · ') + (over ? ' <span class="warn">— больше лимита, снимите лишние.</span>' : '');
@@ -819,8 +1026,11 @@
         return `<div class="choiceGroup"><div class="choiceTitle">${title}</div><div class="chips">${options.map((o, i) =>
           `<label><input type="radio" name="${key}" data-equip="${key}" value="${i}"${i === selected ? ' checked' : ''}> Вариант ${esc(o.label || i + 1)}</label>`).join('')}</div></div>`;
       };
-      el.equipment.innerHTML = group('Стартовое снаряжение класса', cls?.startingEquipment, 'classEquip', state.classEquip)
+      const html = group('Стартовое снаряжение класса', cls?.startingEquipment, 'classEquip', state.classEquip)
         + group('Снаряжение предыстории', background?.startingEquipment, 'bgEquip', state.bgEquip);
+      // 2014 data lists equipment as text with "а) или б)" options; it is shown on the sheet.
+      el.equipment.innerHTML = html || (cls?.equipmentMarkup?.length || background?.equipmentMarkup?.length
+        ? '<p class="hint">Стартовое снаряжение класса и предыстории показано в листе.</p>' : '');
     });
   }
 
@@ -845,7 +1055,10 @@
     const classLine = cls
       ? `${esc(rus(cls))}${subclass ? ` (${esc(rus(subclass))})` : ''}, ${s.level} уровень`
       : `Персонаж ${s.level} уровня`;
-    const speciesName = species ? `${esc(rus(species))}${lineage ? ` — ${esc(rus(lineage))}` : ''}` : '—';
+    // 2014 subrace names already include the race ("Дварф (холмовой)").
+    const speciesName = !species ? '—'
+      : lineage ? (edition === '2014' ? esc(rus(lineage)) : `${esc(rus(species))} — ${esc(rus(lineage))}`)
+        : esc(rus(species));
 
     const abilities = ABILITIES.map(a => `
       <div class="ability" title="${esc(c.sources[a.key].join(', '))}">
@@ -865,13 +1078,14 @@
       return `<li><span class="pip${prof ? ' on' : ''}"></span><span class="val">${signed(skillValue(skill))}</span> ${esc(skill.label)}<span class="abil">${ABILITY[skill.ability]?.short || ''}</span></li>`;
     }).join('');
     const perception = lists.skills.find(x => x.value === 'PERCEPTION');
-    const passive = 10 + (perception ? skillValue(perception) : c.mods.WISDOM);
+    const passive = 10 + (perception ? skillValue(perception) : c.mods.WISDOM) + c.mech.passiveBonus;
 
     const prof = cls?.proficiency || {};
     const tools = [prof.tool, ...(background?.toolProficiencies || []).map(t => {
       const item = (background.startingEquipment || []).flatMap(o => o.items || []).find(i => i.url === t.url);
       return item?.name || t.url;
-    })].filter(Boolean);
+    })].filter(Boolean).map(esc);
+    for (const markup of background?.toolMarkup || []) tools.push(inline(markup)); // 2014 text
 
     const senses = Object.entries(c.mech.senses).map(([k, v]) => `${SENSE_NAMES[k] || k} ${v} фт.`);
     const movement = [`${c.speed} фт.`];
@@ -893,9 +1107,12 @@
         <summary><span>${esc(title)}</span>${tag ? `<span class="tag">${esc(tag)}</span>` : ''}${level ? `<span class="lvl">${level} ур.</span>` : ''}</summary>
         ${rich(desc)}
       </details>`;
-    const classFeatureHtml = c.classFeatures.map((f, i) => feature(`c-${f.key || i}-${f.level}`, f.name, f.level, f.description, f.isSubclass ? 'подкласс' : '')).join('');
+    const classFeatureHtml = c.classFeatures.map((f, i) => feature(`c-${f.key || i}-${f.level}`, f.name, f.level, f.description,
+      f.isSubclass ? 'подкласс' : f.optional ? 'опционально' : '')).join('');
     const speciesFeatureHtml = c.speciesFeatures.map((f, i) => feature(`s-${i}-${rus(f)}`, rus(f), null, f.description)).join('');
-    const featHtml = c.feats.map(({ slot, feat }) => feature(`f-${slot.key}-${feat.url}`, rus(feat), slot.level, feat.description, feat.category)).join('');
+    const bgFeatureHtml = background?.featureName
+      ? feature(`b-${background.url}`, background.featureName, null, background.featureDescription, 'предыстория') : '';
+    const featHtml = bgFeatureHtml + c.feats.map(({ slot, feat }) => feature(`f-${slot.key}-${feat.url}`, rus(feat), slot.level, feat.description, feat.category)).join('');
 
     let spellHtml = '';
     if (c.spell) {
@@ -925,6 +1142,9 @@
     const equipment = [
       cls?.startingEquipment?.length ? `<dt>Класс (вариант ${esc(cls.startingEquipment[s.classEquip]?.label || '')})</dt><dd>${equipmentText(cls.startingEquipment[s.classEquip])}</dd>` : '',
       background?.startingEquipment?.length ? `<dt>Предыстория (вариант ${esc(background.startingEquipment[s.bgEquip]?.label || '')})</dt><dd>${equipmentText(background.startingEquipment[s.bgEquip])}</dd>` : '',
+      // 2014: equipment is descriptive text (with "а) или б)" choices) rather than structured options.
+      cls?.equipmentMarkup?.length ? `<dt>Класс</dt><dd>${rich(cls.equipmentMarkup)}</dd>` : '',
+      background?.equipmentMarkup?.length ? `<dt>Предыстория</dt><dd>${background.equipmentMarkup.map(inline).join(', ')}</dd>` : '',
     ].join('');
 
     el.sheet.innerHTML = `
@@ -934,7 +1154,7 @@
           <div class="charSub">${classLine}</div>
         </div>
         <div class="facts">
-          <div class="fact"><span>Вид</span><b>${speciesName}</b></div>
+          <div class="fact"><span>${esc(P.labels.species)}</span><b>${speciesName}</b></div>
           <div class="fact"><span>Предыстория</span><b>${background ? esc(rus(background)) : '—'}</b></div>
           <div class="fact"><span>Мировоззрение</span><b>${esc(s.alignment || '—')}</b></div>
           <div class="fact"><span>Кость хитов</span><b>${c.hd ? `${s.level}${esc(c.hd.label)}` : '—'}</b></div>
@@ -961,7 +1181,7 @@
             <dl class="kv">
               <dt>Доспехи</dt><dd>${esc(prof.armor || '—')}</dd>
               <dt>Оружие</dt><dd>${esc(prof.weapon || '—')}</dd>
-              <dt>Инструменты</dt><dd>${esc(tools.join(', ') || '—')}</dd>
+              <dt>Инструменты</dt><dd>${tools.join(', ') || '—'}</dd>
               <dt>Языки</dt><dd>${esc(s.languages || '—')}</dd>
             </dl>
           </section>
@@ -971,14 +1191,14 @@
           ${c.resources.length ? `<section class="box"><h3>Ресурсы</h3><ul class="list">${c.resources.map(r =>
             `<li><span class="val">${esc(r.value)}</span> ${esc(r.name)}${RECOVERY_NAMES[r.recovery] ? `<span class="abil">${RECOVERY_NAMES[r.recovery]}</span>` : ''}</li>`).join('')}</ul></section>` : ''}
           <section class="box"><h3>Умения класса</h3>${classFeatureHtml || '<p class="muted">Выберите класс.</p>'}</section>
-          <section class="box"><h3>Черты вида</h3>${speciesFeatureHtml || `<p class="muted">${species ? 'Нет особых черт.' : 'Выберите вид.'}</p>`}</section>
+          <section class="box"><h3>${edition === '2014' ? 'Расовые особенности' : 'Черты вида'}</h3>${speciesFeatureHtml || `<p class="muted">${species ? 'Нет особых черт.' : `Выберите: ${esc(P.labels.species.toLowerCase())}.`}</p>`}</section>
           <section class="box"><h3>Черты</h3>${featHtml || '<p class="muted">Черт пока нет.</p>'}</section>
         </div>
       </div>
       ${spellHtml}
       ${equipment ? `<section class="box"><h3>Снаряжение</h3><dl class="kv">${equipment}</dl></section>` : ''}
       ${s.notes ? `<section class="box"><h3>Заметки</h3><p style="white-space:pre-wrap">${esc(s.notes)}</p></section>` : ''}
-      <p class="hint">Источник данных: TTG Club. ${eff?.source?.name ? `Класс: ${esc(eff.source.name.rus || eff.source.name.label)}.` : ''}</p>`;
+      <p class="hint">Правила D&amp;D ${edition}. Источник данных: TTG Club${edition === '2014' ? ' (5e14)' : ''}. ${eff?.source?.name ? `Класс: ${esc(eff.source.name.rus || eff.source.name.label)}.` : ''}</p>`;
   }
 
   // ---------- update loop ----------
@@ -1101,7 +1321,7 @@
 
     const featPool = [...data.featLists.general, ...data.featLists.epic];
     for (const [key, entry] of Object.entries(state.feats)) {
-      if (key === 'origin') continue; // fixed by the background
+      if (key === 'origin' || entry?.url === ASI_FEAT.url) continue; // fixed by background / not a book feat
       const feat = find(featPool, entry?.url) || data.feats[entry?.url];
       if (bad(feat)) { removed.push(rus(feat)); state.feats = { ...state.feats, [key]: { url: '', option: 0, picks: [] } }; }
     }
@@ -1115,8 +1335,8 @@
   }
   el.cls.addEventListener('change', () => setAndUpdate({ classUrl: el.cls.value, subclassUrl: '', classSkills: [], spells: [], classEquip: 0 }));
   el.subclass.addEventListener('change', () => setAndUpdate({ subclassUrl: el.subclass.value }));
-  el.species.addEventListener('change', () => setAndUpdate({ speciesUrl: el.species.value, lineageUrl: '' }));
-  el.lineage.addEventListener('change', () => setAndUpdate({ lineageUrl: el.lineage.value }));
+  el.species.addEventListener('change', () => setAndUpdate({ speciesUrl: el.species.value, lineageUrl: '', raceBonus: {} }));
+  el.lineage.addEventListener('change', () => setAndUpdate({ lineageUrl: el.lineage.value, raceBonus: {} }));
   el.background.addEventListener('change', () => {
     const feats = { ...state.feats };
     delete feats.origin;
@@ -1156,6 +1376,12 @@
     if (t.dataset.featOption) {
       const key = t.dataset.featOption;
       return setAndUpdate({ feats: { ...state.feats, [key]: { ...(state.feats[key] || {}), option: Number(t.value), picks: [] } } });
+    }
+    if (t.dataset.racePick) {
+      const index = t.dataset.racePick;
+      const picks = [...(state.raceBonus[index] || [])];
+      picks[Number(t.dataset.index)] = t.value;
+      return setAndUpdate({ raceBonus: { ...state.raceBonus, [index]: picks } });
     }
     if (t.dataset.featPick) {
       const key = t.dataset.featPick;
@@ -1211,7 +1437,7 @@
     }
   }
   function showSpell(url) {
-    showDetail(() => api(`spells/${url}`), sp => {
+    showDetail(() => P.loadSpell(url), sp => {
       const comps = sp.components || {};
       const compText = [comps.v && 'В', comps.s && 'С', comps.m && `М${typeof comps.m === 'string' ? ` (${comps.m})` : ''}`].filter(Boolean).join(', ');
       return `<h2>${esc(rus(sp))}</h2>
@@ -1220,12 +1446,12 @@
           <dt>Время накладывания</dt><dd>${esc(sp.castingTime || '—')}</dd>
           <dt>Дистанция</dt><dd>${esc(sp.range || '—')}</dd>
           <dt>Компоненты</dt><dd>${esc(compText || '—')}</dd>
-          <dt>Длительность</dt><dd>${esc(sp.duration || '—')}${sp.concentration ? ' (концентрация)' : ''}</dd>
+          <dt>Длительность</dt><dd>${esc(sp.duration || '—')}${sp.concentration && !/концентрац/i.test(sp.duration || '') ? ' (концентрация)' : ''}</dd>
         </dl><br>${rich(sp.description)}${sp.upper?.length ? `<h3>На более высоких уровнях</h3>${rich(sp.upper)}` : ''}`;
     });
   }
   function showFeat(url) {
-    showDetail(() => api(`feats/${url}`), f => `<h2>${esc(rus(f))}</h2>
+    showDetail(() => P.loadFeat(url), f => `<h2>${esc(rus(f))}</h2>
       <p class="hint">${esc(f.category || '')}${f.prerequisite ? ` · Требование: ${esc(f.prerequisite)}` : ''} · ${esc(f.source?.name?.label || '')}</p>
       ${rich(f.description)}`);
   }
@@ -1239,7 +1465,7 @@
     update();
   });
   $('exportBtn').addEventListener('click', () => {
-    const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
+    const blob = new Blob([JSON.stringify({ ...state, edition }, null, 2)], { type: 'application/json' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = `${(state.name || 'персонаж').replace(/[\\/:*?"<>|]+/g, '_')}.json`;
@@ -1251,7 +1477,12 @@
     event.target.value = '';
     if (!file) return;
     try {
-      state = normalizeState(JSON.parse(await file.text()));
+      const raw = JSON.parse(await file.text());
+      // Exports before the edition switch carry no edition and are 2024 characters.
+      const target = raw.edition === '2014' ? '2014' : '2024';
+      if (target !== edition) await switchEdition(target, { skipUpdate: true });
+      delete raw.edition;
+      state = normalizeState(raw);
       Object.keys(rendered).forEach(k => delete rendered[k]);
       fillMainSelects();
       syncStaticInputs();
@@ -1262,34 +1493,63 @@
   });
   $('printBtn').addEventListener('click', () => window.print());
 
+  document.querySelectorAll('input[name="edition"]').forEach(radio => radio.addEventListener('change', () => {
+    if (radio.checked) switchEdition(radio.value);
+  }));
+
+  // ---------- editions ----------
+
+  const editionLists = {}; // edition -> loaded lists, so switching back is instant
+
+  async function loadEditionLists() {
+    if (!editionLists[edition]) {
+      try {
+        editionLists[edition] = await P.loadLists();
+      } catch (err) {
+        console.error(err);
+        setStatus('TTG Club недоступен — попробуйте позже', true);
+        return;
+      }
+    }
+    Object.assign(lists, { feats: [], sourceList: [] }, editionLists[edition]);
+  }
+
+  async function switchEdition(next, { skipUpdate = false } = {}) {
+    if (next === edition || !PROVIDERS[next]) return;
+    save(); // keep the current edition's character
+    generation++; // drop any in-flight update for the old edition
+    edition = next;
+    P = PROVIDERS[edition];
+    state = loadState(edition);
+    Object.assign(data, {
+      cls: null, subclasses: [], subclass: null, eff: null, species: null, lineages: [], lineage: null,
+      background: null, feats: {}, featLists: { general: [], epic: [] }, spells: [], spellsKey: '',
+    });
+    Object.keys(rendered).forEach(k => delete rendered[k]);
+    el.spellFilter.value = '';
+    setStatus('Загрузка…');
+    syncStaticInputs();
+    await loadEditionLists();
+    syncStaticInputs();
+    fillMainSelects();
+    if (!skipUpdate) update();
+  }
+
   // ---------- init ----------
 
   async function init() {
     el.armor.innerHTML = ARMORS.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
     syncStaticInputs();
-    try {
-      const [classes, species, backgrounds] = await Promise.all([
-        api('classes/search'), api('species/search'), api('backgrounds/search'),
-      ]);
-      lists.classes = sortByName(classes);
-      lists.species = sortByName(species);
-      lists.backgrounds = sortByName(backgrounds);
-    } catch (err) {
-      console.error(err);
-      setStatus('TTG Club недоступен — попробуйте позже', true);
-    }
-    const [skills, damage, conditions, sources] = await Promise.all([
-      api('dictionaries/skills').catch(() => null),
-      api('dictionaries/damage/types').catch(() => []),
-      api('dictionaries/conditions').catch(() => []),
-      api('sources').catch(() => []),
+    // Damage/condition names are the same in both editions; take them from the core-api.
+    const [damage, conditions] = await Promise.all([
+      fetchJson('/api/dnd/dictionaries/damage/types').catch(() => []),
+      fetchJson('/api/dnd/dictionaries/conditions').catch(() => []),
+      loadEditionLists(),
     ]);
-    lists.sources = Array.isArray(sources) ? sources : [];
-    renderSourcePicker();
-    if (Array.isArray(skills) && skills.length) lists.skills = [...skills].sort((a, b) => a.label.localeCompare(b.label, 'ru'));
     const toDict = arr => Object.fromEntries((Array.isArray(arr) ? arr : []).map(x => [x.value, (x.label || x.name || '').toLowerCase()]));
     lists.damage = toDict(damage);
     lists.conditions = toDict(conditions);
+    syncStaticInputs();
     fillMainSelects();
     update();
   }

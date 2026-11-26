@@ -98,6 +98,17 @@ button:hover, .fileBtn:hover { border-color: var(--site-accent); color: var(--si
 .hint:empty { display: none; }
 .warn { color: #ffcf7a; }
 
+.editionSwitch { display: flex; align-items: center; gap: 6px; margin-bottom: 12px; font-size: 13px; }
+.editionSwitch span { margin-right: 4px; color: var(--site-muted); font-size: 12px; }
+.panel .editionSwitch label {
+  display: inline-flex; align-items: center; gap: 5px; margin: 0;
+  padding: 4px 12px; border: 1px solid var(--site-line); border-radius: 999px;
+  color: var(--site-ink); font-size: 13px; cursor: pointer;
+}
+.panel .editionSwitch label:has(input:checked) { border-color: var(--site-accent); background: rgba(112, 225, 195, .12); color: var(--site-accent-strong); }
+.editionSwitch input { margin: 0; }
+#raceBonus .bonusPicks { display: grid; gap: 6px; }
+#raceBonus .bonusPicks select { padding: 5px 7px; font-size: 12px; }
 .sourcePicker { margin-top: 4px; font-size: 13px; }
 .sourcePicker summary { cursor: pointer; color: var(--site-ink); padding: 4px 0; }
 .sourcePicker summary span { color: var(--site-accent); }
@@ -224,6 +235,11 @@ button:hover, .fileBtn:hover { border-color: var(--site-accent); color: var(--si
 .rich ul { margin: 0 0 6px; padding-left: 18px; }
 .rich .dice { color: var(--site-accent-strong); font-weight: 600; }
 .rich .ref { color: var(--site-accent); }
+.rich .mdList { display: block; margin: 2px 0 6px; }
+.rich .mdItem { display: list-item; margin-left: 18px; }
+.rich .mdTable { display: table; border-collapse: collapse; margin: 4px 0 8px; font-size: 12px; }
+.rich .mdRow { display: table-row; }
+.rich .mdCell { display: table-cell; padding: 3px 6px; border: 1px solid var(--site-line); }
 .rich table { border-collapse: collapse; margin: 4px 0 8px; font-size: 12px; }
 .rich td, .rich th { padding: 3px 6px; border: 1px solid var(--site-line); }
 

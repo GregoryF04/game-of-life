@@ -138,18 +138,34 @@
   // ---------- data ----------
 
   const requestCache = new Map();
-  function fetchJson(url) {
+  const getJson = (url, init) => fetch(url, init).then(r => {
+    if (!r.ok) {
+      const err = new Error(`HTTP ${r.status}`);
+      err.status = r.status;
+      throw err;
+    }
+    return r.json();
+  });
+  // fallback: used when our proxy cannot reach TTG (it answers 502); not for a real 404.
+  function fetchJson(url, fallback) {
     if (!requestCache.has(url)) {
-      const p = fetch(url).then(r => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
+      const p = getJson(url).catch(err => {
+        if (fallback && err.status !== 404) return fallback();
+        throw err;
       });
       p.catch(() => requestCache.delete(url));
       requestCache.set(url, p);
     }
     return requestCache.get(url);
   }
-  const api = path => fetchJson(P.base + path);
+  const api = path => fetchJson(P.base + path, P.direct ? () => P.direct(path) : null);
+
+  // The core-api allows cross-origin reads, so the browser can go to TTG directly when our
+  // server cannot (the server's route to TTG stalls on larger responses).
+  const CORE_DIRECT = 'https://api.ttg.club/api/v2/';
+  const coreDirect = path => (path === 'sources'
+    ? getJson(`${CORE_DIRECT}source/search`, { method: 'POST' })
+    : getJson(CORE_DIRECT + path));
 
   // 2014 "ability score improvement" is a choice between +2/+1+1 and a feat; we offer it
   // as a pseudo-feat so the same slot UI and bonus resolution handle both editions.
@@ -170,6 +186,7 @@
   const PROVIDERS = {
     2024: {
       base: '/api/dnd/',
+      direct: coreDirect,
       eyebrow: 'D&D 5e (2024) · данные TTG Club',
       labels: { species: 'Вид', lineage: 'Происхождение', noLineage: '— основной вид —', speciesPlaceholder: '— выберите вид —' },
       rules: { bgAbilityBonus: true, raceAbilityBonus: false, originFeat: true, asiPseudoFeat: false },
@@ -1542,8 +1559,8 @@
     syncStaticInputs();
     // Damage/condition names are the same in both editions; take them from the core-api.
     const [damage, conditions] = await Promise.all([
-      fetchJson('/api/dnd/dictionaries/damage/types').catch(() => []),
-      fetchJson('/api/dnd/dictionaries/conditions').catch(() => []),
+      fetchJson('/api/dnd/dictionaries/damage/types', () => coreDirect('dictionaries/damage/types')).catch(() => []),
+      fetchJson('/api/dnd/dictionaries/conditions', () => coreDirect('dictionaries/conditions')).catch(() => []),
       loadEditionLists(),
     ]);
     const toDict = arr => Object.fromEntries((Array.isArray(arr) ? arr : []).map(x => [x.value, (x.label || x.name || '').toLowerCase()]));

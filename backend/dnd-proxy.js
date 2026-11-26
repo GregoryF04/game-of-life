@@ -12,6 +12,7 @@ const path = require('path');
 const crypto = require('crypto');
 const https = require('https');
 const http = require('http');
+const zlib = require('zlib');
 
 const FRESH_MS = 12 * 60 * 60 * 1000;     // serve from cache without revalidating
 const ATTEMPT_TIMEOUT_MS = 10_000;
@@ -19,15 +20,19 @@ const ATTEMPTS = 3;
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
 const MEMORY_ENTRIES = 150;
 
-// From the production host, some upstream requests stall until timed out while an
-// identical retry succeeds. Use a fresh connection per request (no keep-alive pool that
-// can hand out a silently dropped socket) and retry stalled attempts.
+// From the production host, connections to TTG stall once a response passes roughly
+// 16 KB on the wire (a network-path issue between the two hosting networks; the same
+// requests work from elsewhere). So: always ask for gzip (most core-api payloads then fit),
+// use a fresh connection per attempt, and retry a stalled attempt a few times.
 function requestOnce({ url, method, body }) {
   return new Promise((resolve, reject) => {
     const target = new URL(url);
     const lib = target.protocol === 'http:' ? http : https;
     const payload = body ? JSON.stringify(body) : null;
-    const headers = { accept: 'application/json', 'user-agent': 'mini-games-character-builder/1.0', connection: 'close' };
+    const headers = {
+      accept: 'application/json', 'accept-encoding': 'gzip, deflate',
+      'user-agent': 'mini-games-character-builder/1.0', connection: 'close',
+    };
     if (payload) {
       headers['content-type'] = 'application/json';
       headers['content-length'] = Buffer.byteLength(payload);
@@ -40,7 +45,18 @@ function requestOnce({ url, method, body }) {
         if (size > MAX_BODY_BYTES) req.destroy(new Error('Upstream response too large'));
         else chunks.push(chunk);
       });
-      res.on('end', () => resolve({ status: res.statusCode, text: Buffer.concat(chunks).toString('utf8') }));
+      res.on('end', () => {
+        const raw = Buffer.concat(chunks);
+        const encoding = String(res.headers['content-encoding'] || '').toLowerCase();
+        try {
+          const buf = encoding === 'gzip' ? zlib.gunzipSync(raw, { maxOutputLength: MAX_BODY_BYTES })
+            : encoding === 'deflate' ? zlib.inflateSync(raw, { maxOutputLength: MAX_BODY_BYTES })
+              : raw;
+          resolve({ status: res.statusCode, text: buf.toString('utf8') });
+        } catch (err) {
+          reject(err);
+        }
+      });
       res.on('error', reject);
     });
     // Covers both a slow connect and a response that stops arriving mid-way.
@@ -178,28 +194,31 @@ function createCachedProxy({ cacheDir, resolve }) {
     return { body: res.text, fetchedAt: Date.now() };
   }
 
+  function refresh(req) {
+    const { key } = req;
+    if (!inflight.has(key)) {
+      const p = fetchUpstream(req).then(fresh => {
+        remember(key, fresh);
+        writeDisk(key, fresh);
+        return fresh;
+      }).finally(() => inflight.delete(key));
+      inflight.set(key, p);
+    }
+    return inflight.get(key);
+  }
+
   async function load(req) {
     const { key } = req;
     const entry = memory.get(key) || await readDisk(key);
-    if (entry && Date.now() - entry.fetchedAt < FRESH_MS) {
+    if (entry) {
       remember(key, entry);
-      return { entry, cache: 'hit' };
+      if (Date.now() - entry.fetchedAt < FRESH_MS) return { entry, cache: 'hit' };
+      // Stale-while-revalidate: answer now, refresh in the background. Upstream can be
+      // slow or unreachable from this host, and the compendium rarely changes.
+      refresh(req).catch(err => console.error(`dnd refresh failed for ${key}: ${err.message}`));
+      return { entry, cache: 'stale' };
     }
-    if (!inflight.has(key)) {
-      inflight.set(key, fetchUpstream(req).finally(() => inflight.delete(key)));
-    }
-    try {
-      const fresh = await inflight.get(key);
-      remember(key, fresh);
-      writeDisk(key, fresh);
-      return { entry: fresh, cache: 'miss' };
-    } catch (err) {
-      if (entry && err.status !== 404) {
-        remember(key, entry);
-        return { entry, cache: 'stale' };
-      }
-      throw err;
-    }
+    return { entry: await refresh(req), cache: 'miss' };
   }
 
   router.get('/*', async (req, res) => {

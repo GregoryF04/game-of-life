@@ -153,10 +153,15 @@ function resolveLegacy(subPath, query) {
 // same format so a pre-built snapshot can be dropped into the cache directory.
 const cacheFileName = key => crypto.createHash('sha1').update(key).digest('hex') + '.json';
 
-function createCachedProxy({ cacheDir, resolve }) {
+const REFRESH_BACKOFF_MS = 60 * 60 * 1000;
+
+// seedDir: optional read-only snapshot shipped with the app (backend/seed/...), consulted
+// after the live cache. Needed for the 2014 data, which this host cannot download itself.
+function createCachedProxy({ cacheDir, resolve, seedDir = null }) {
   const router = express.Router();
   const memory = new Map(); // key -> { body, fetchedAt }
   const inflight = new Map();
+  const failedAt = new Map(); // key -> time of the last failed background refresh
 
   fs.mkdir(cacheDir, { recursive: true }, () => {});
 
@@ -170,14 +175,19 @@ function createCachedProxy({ cacheDir, resolve }) {
     return path.join(cacheDir, cacheFileName(key));
   }
 
-  async function readDisk(key) {
+  async function readEntry(file) {
     try {
-      const raw = await fs.promises.readFile(diskFile(key), 'utf8');
+      const raw = await fs.promises.readFile(file, 'utf8');
       const entry = JSON.parse(raw);
       return entry && typeof entry.body === 'string' ? entry : null;
     } catch {
       return null;
     }
+  }
+
+  async function readDisk(key) {
+    return (await readEntry(diskFile(key)))
+      || (seedDir ? readEntry(path.join(seedDir, cacheFileName(key))) : null);
   }
 
   function writeDisk(key, entry) {
@@ -218,8 +228,14 @@ function createCachedProxy({ cacheDir, resolve }) {
       remember(key, entry);
       if (Date.now() - entry.fetchedAt < FRESH_MS) return { entry, cache: 'hit' };
       // Stale-while-revalidate: answer now, refresh in the background. Upstream can be
-      // slow or unreachable from this host, and the compendium rarely changes.
-      refresh(req).catch(err => console.error(`dnd refresh failed for ${key}: ${err.message}`));
+      // slow or unreachable from this host, and the compendium rarely changes, so after a
+      // failed refresh wait an hour before trying that key again.
+      if (Date.now() - (failedAt.get(key) || 0) > REFRESH_BACKOFF_MS) {
+        refresh(req).then(() => failedAt.delete(key)).catch(err => {
+          failedAt.set(key, Date.now());
+          console.error(`dnd refresh failed for ${key}: ${err.message}`);
+        });
+      }
       return { entry, cache: 'stale' };
     }
     return { entry: await refresh(req), cache: 'miss' };
@@ -247,8 +263,8 @@ function createDndProxy({ cacheDir }) {
   return createCachedProxy({ cacheDir, resolve: resolveCore });
 }
 
-function createDnd14Proxy({ cacheDir }) {
-  return createCachedProxy({ cacheDir, resolve: resolveLegacy });
+function createDnd14Proxy({ cacheDir, seedDir = path.join(__dirname, 'seed', 'dnd14') }) {
+  return createCachedProxy({ cacheDir, resolve: resolveLegacy, seedDir });
 }
 
 module.exports = {

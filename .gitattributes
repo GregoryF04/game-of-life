@@ -1,0 +1,2 @@
+# Data snapshot written by backend/tools/warm-dnd-cache.js: keep it byte-for-byte.
+backend/seed/** -text -diff

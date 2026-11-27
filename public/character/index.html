@@ -180,6 +180,34 @@
             <label class="check"><input type="checkbox" id="shieldInput"> Щит</label>
           </div>
           <div id="equipmentChoices"></div>
+          <div class="choiceGroup">
+            <div class="choiceTitle">Оружие (атаки)</div>
+            <div class="pickRow">
+              <select id="weaponSelect"></select>
+              <button type="button" id="addWeaponBtn" class="smallBtn">Добавить</button>
+            </div>
+            <div id="weaponList" class="chips"></div>
+          </div>
+          <div class="choiceGroup">
+            <div class="choiceTitle">Деньги</div>
+            <div class="money">
+              <label>мм <input type="number" min="0" data-money="cp"></label>
+              <label>см <input type="number" min="0" data-money="sp"></label>
+              <label>эм <input type="number" min="0" data-money="ep"></label>
+              <label>зм <input type="number" min="0" data-money="gp"></label>
+              <label>пм <input type="number" min="0" data-money="pp"></label>
+            </div>
+          </div>
+          <div class="choiceGroup">
+            <div class="choiceTitle">Инвентарь</div>
+            <div id="inventoryList"></div>
+            <div class="pickRow">
+              <input id="itemNameInput" maxlength="120" placeholder="Предмет">
+              <input id="itemQtyInput" type="number" min="1" value="1" class="qty" aria-label="Количество">
+              <button type="button" id="addItemBtn" class="smallBtn">+</button>
+            </div>
+            <button type="button" id="startGearBtn" class="smallBtn">Добавить стартовое снаряжение в инвентарь</button>
+          </div>
         </section>
 
         <section class="panel">
@@ -199,6 +227,7 @@
   </dialog>
 
   <script src="ttg2014.js"></script>
+  <script src="weapons.js"></script>
   <script src="script.js"></script>
 </body>
 </html>

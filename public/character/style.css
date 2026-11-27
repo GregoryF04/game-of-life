@@ -146,6 +146,17 @@ button:hover, .fileBtn:hover { border-color: var(--site-accent); color: var(--si
 .chips input { margin: 0; }
 
 .smallBtn { margin-top: 6px; padding: 5px 10px; font-size: 12px; }
+.money { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; }
+.panel .money label { margin: 0; font-size: 11px; text-align: center; }
+.money input { padding: 4px 6px; }
+.qty { width: 64px !important; flex: 0 0 64px; }
+.invRow { margin-bottom: 4px; }
+.equipLine { padding: 4px 0; border-top: 1px dashed var(--site-line); font-size: 12px; color: var(--site-ink); }
+.equipLine:first-of-type { border-top: 0; }
+.panel .equipLine label.check { margin: 2px 0; font-size: 12px; }
+.plainList { margin: 0; padding-left: 18px; }
+.attackTable td { vertical-align: top; }
+.attackTable tr.noProf td { opacity: .7; }
 .hpRolls { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 6px; }
 .panel .hpRolls label { margin: 0; font-size: 11px; }
 .hpRolls input { padding: 4px 6px; }

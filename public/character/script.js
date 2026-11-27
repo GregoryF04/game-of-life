@@ -105,6 +105,10 @@
       spells: [],
       armor: 'none', shield: false,
       classEquip: 0, bgEquip: 0,
+      weapons: [], // weapon keys from weapons.js shown in the attacks section
+      inventory: [], // [{ name, qty }]
+      money: { cp: 0, sp: 0, ep: 0, gp: 0, pp: 0 },
+      equip14: {}, // 2014 starting equipment: { [line index]: chosen option index }
       languages: 'Общий', notes: '',
     };
   }
@@ -122,6 +126,11 @@
     if (!s.extraSpells || typeof s.extraSpells !== 'object') s.extraSpells = {};
     if (!s.choices || typeof s.choices !== 'object') s.choices = {};
     if (!['average', 'rolled', 'manual'].includes(s.hpMode)) s.hpMode = 'average';
+    s.weapons = Array.isArray(s.weapons) ? s.weapons.filter(k => typeof k === 'string') : [];
+    s.inventory = (Array.isArray(s.inventory) ? s.inventory : [])
+      .map(x => ({ name: String(x?.name || '').slice(0, 120), qty: clampInt(x?.qty, 0, 9999, 1) }));
+    s.money = Object.fromEntries(['cp', 'sp', 'ep', 'gp', 'pp'].map(k => [k, clampInt(raw.money?.[k], 0, 9999999, 0)]));
+    if (!s.equip14 || typeof s.equip14 !== 'object') s.equip14 = {};
     if (!s.hpRolls || typeof s.hpRolls !== 'object') s.hpRolls = {};
     s.multiclass = (Array.isArray(s.multiclass) ? s.multiclass : []).slice(0, 3).map(m => ({
       classUrl: String(m?.classUrl || ''), subclassUrl: String(m?.subclassUrl || ''),
@@ -869,8 +878,10 @@
           out.push({ ...base, type: 'tool', options: (ch.options || []).map(o => ({ value: o.value, label: o.name || o.value })) });
         } else if (ch.type === 'SPELLCASTING_ABILITY') {
           out.push({ ...base, type: 'ability', options: (ch.options || []).map(o => o.value).filter(v => ABILITY[v]) });
+        } else if (ch.type === 'WEAPON_MASTERY') {
+          out.push({ ...base, type: 'mastery' }); // options: proficient weapons, resolved in compute
         }
-        // FEAT → feat slots; CANTRIP/SPELL → spells; WEAPON_MASTERY → attacks section.
+        // FEAT → feat slots; CANTRIP/SPELL → spells.
       }
     };
     const entries = classEntriesLoaded();
@@ -1212,6 +1223,8 @@
 
     // Spellcasting
     const extraSpells = extraSpellsNow(); // racial and feat spells, also for non-casters
+    const attacks = computeAttacks({ entries, mods, pb, choices, chosenOptions, feats });
+
     // Save DC and attack bonus of each racial/feat spell source.
     const extraStats = {};
     for (const src of data.spellSources || []) {
@@ -1276,10 +1289,125 @@
       expertise, halfPb, jackOfAllTrades, choices, chosenOptions, chosenLanguages, chosenTools, featIssues,
       hp, hd, ac, acNote, warnings,
       init: mods.DEXTERITY + (mech.initPB ? pb : halfPb) + mech.initBonus, initPB: mech.initPB,
-      racePlan, extraSpells, extraStats,
+      racePlan, extraSpells, extraStats, attacks,
       speed: (props.movement?.base || 30) + speedBonus, speedNotes, movement: props.movement || {}, size: props.size, creatureType: props.type,
       mech, classFeatures, speciesFeatures, spell, resources,
     };
+  }
+
+  // ---------- weapons & attacks ----------
+
+  const WPN = window.DND_WEAPONS;
+  const weaponsForEdition = () => WPN.WEAPONS.map(w => WPN.forEdition(w, edition));
+  // Multiclassing into these grants simple and martial weapons (PHB).
+  const MULTICLASS_WEAPONS = new Set(['fighter', 'paladin', 'ranger', 'barbarian']);
+  // 2014 racial weapon training (the 2024 species have none).
+  const RACE_WEAPONS_2014 = {
+    elf: ['longsword', 'shortsword', 'shortbow', 'longbow'],
+    dwarf: ['battleaxe', 'handaxe', 'light-hammer', 'warhammer'],
+  };
+
+  // Which weapons the character is proficient with.
+  function weaponProficiency(entries) {
+    const all = weaponsForEdition();
+    const keys = new Set();
+    const addCat = (cat, kind) => all.filter(w => w.cat === cat && (!kind || w.kind === kind)).forEach(w => keys.add(w.key));
+    const main = entries[0]?.cls;
+    const wd = main?.proficiency?.weaponData;
+    if (wd?.category?.length) {
+      // 2024: SIMPLE_MELEE … (TTG writes martial as "MATERIAL_*") plus a free-text extra.
+      for (const c of wd.category) {
+        const [cat, kind] = c.toLowerCase().split('_');
+        addCat(cat === 'simple' ? 'simple' : 'martial', kind === 'melee' ? 'melee' : 'ranged');
+      }
+      const custom = String(wd.custom || '').toLowerCase();
+      if (/воинск/.test(custom)) {
+        all.filter(w => w.cat === 'martial'
+          && ((/фехтов/.test(custom) && w.props.includes('finesse')) || (/л[её]гк/.test(custom) && w.props.includes('light'))))
+          .forEach(w => keys.add(w.key));
+      }
+    } else {
+      // 2014: "Простое оружие, длинные мечи, рапиры, …" or "Простое и воинское оружие".
+      for (const seg of String(main?.proficiency?.weapon || '').toLowerCase().split(/[,;]\s*/)) {
+        if (/простое/.test(seg)) addCat('simple');
+        if (/воинское/.test(seg)) addCat('martial');
+        all.filter(w => w.stem.test(seg.trim())).forEach(w => keys.add(w.key));
+      }
+    }
+    for (const e of entries.slice(1)) if (MULTICLASS_WEAPONS.has(baseClass(e.cls))) { addCat('simple'); addCat('martial'); }
+    if (edition === '2014') (RACE_WEAPONS_2014[String(data.species?.url || '')] || []).forEach(k => keys.add(k));
+    return keys;
+  }
+
+  // Attack rows for the chosen weapons plus an unarmed strike.
+  function computeAttacks({ entries, mods, pb, choices, chosenOptions, feats }) {
+    const proficient = weaponProficiency(entries);
+    const styles = new Set([
+      ...chosenOptions.map(x => x.option.key),
+      ...feats.map(x => String(x.feat.url || '').replace(/-phb$/, '').replace(/-/g, '_')),
+    ]);
+    const masteries = new Set(choices.filter(ch => ch.type === 'mastery').flatMap(ch => choicePicks(ch, v => proficient.has(v))));
+    const all = weaponsForEdition();
+    const rows = [];
+    for (const key of state.weapons) {
+      const w = all.find(x => x.key === key);
+      if (!w) continue;
+      const finesse = w.props.includes('finesse');
+      const ability = w.kind === 'ranged' ? 'DEXTERITY'
+        : finesse ? (mods.DEXTERITY > mods.STRENGTH ? 'DEXTERITY' : 'STRENGTH') : 'STRENGTH';
+      const mod = mods[ability];
+      const prof = proficient.has(w.key);
+      const twoHanded = w.props.includes('twoHanded');
+      let attackBonus = mod + (prof ? pb : 0);
+      let dmgBonus = mod;
+      const notes = [];
+      if (w.kind === 'ranged' && styles.has('archery')) { attackBonus += 2; notes.push('стиль «Стрельба» +2'); }
+      if (w.kind === 'melee' && !twoHanded && styles.has('dueling')) { dmgBonus += 2; notes.push('«Дуэлянт» +2 урона в одной руке'); }
+      if (w.props.includes('thrown') && styles.has('thrown_weapon_fighting')) notes.push('«Метательное оружие»: +2 урона при броске');
+      if ((twoHanded || w.versatile) && w.kind === 'melee' && styles.has('great_weapon_fighting')) notes.push('«Большое оружие»: перебрасывание 1 и 2');
+      const fmt = dice => `${dice}${dmgBonus ? ` ${dmgBonus > 0 ? '+' : '−'} ${Math.abs(dmgBonus)}` : ''}`;
+      rows.push({
+        key: w.key, name: w.rus, prof, ability, attack: attackBonus,
+        damage: `${fmt(w.dmg)} ${w.type}`, versatile: w.versatile ? fmt(w.versatile) : '',
+        props: w.props.map(p => WPN.PROPERTY_NAMES[p]).concat(w.range ? [`дистанция ${w.range} фт.`] : []),
+        mastery: masteries.has(w.key) ? WPN.MASTERY_NAMES[w.mastery] || '' : '',
+        notes,
+      });
+    }
+    // Unarmed strike: everyone is proficient; a monk uses the martial arts die and STR or DEX.
+    const monk = entries.find(e => baseClass(e.cls) === 'monk');
+    const maCol = monk && (monk.eff?.table || []).find(col => /боев\S* искусств/i.test(col.name || ''));
+    const maDie = maCol ? scalingValue(maCol, monk.level) : null;
+    const unarmedAbility = maDie && mods.DEXTERITY > mods.STRENGTH ? 'DEXTERITY' : 'STRENGTH';
+    const um = mods[unarmedAbility];
+    rows.push({
+      key: 'unarmed', name: 'Безоружный удар', prof: true, ability: unarmedAbility, attack: um + pb,
+      damage: maDie ? `${maDie}${um ? ` ${um > 0 ? '+' : '−'} ${Math.abs(um)}` : ''} дробящий` : `${Math.max(0, 1 + um)} дробящий`,
+      versatile: '', props: maDie ? ['боевые искусства'] : [], mastery: '', notes: [],
+    });
+    return { rows, proficient };
+  }
+
+  // 2014 starting equipment is text: "{@list {@li а) X или б) Y}{@li Z}}". Split it into lines
+  // with their alternatives so the player can choose.
+  function equipmentLines14(markup) {
+    const text = (markup || []).join(' ');
+    const lines = [];
+    let i = text.indexOf('{@li ');
+    while (i !== -1) {
+      let depth = 0;
+      let j = i;
+      for (; j < text.length; j++) {
+        if (text[j] === '{') depth++;
+        else if (text[j] === '}' && --depth === 0) break;
+      }
+      const body = text.slice(i + 5, j).trim();
+      const options = body.split(/\s+или\s+(?=[а-е]\)\s)/).map(o => o.replace(/^[а-е]\)\s*/, '').trim()).filter(Boolean);
+      lines.push({ options });
+      i = text.indexOf('{@li ', j);
+    }
+    const notes = (markup || []).filter(m => !m.includes('{@list'));
+    return { lines, notes };
   }
 
   // Casting ability of a class list ("wizard-phb" / "wizard").
@@ -1443,6 +1571,8 @@
     tabSpellCount: $('tabSpellCount'), spellBrowserBody: $('spellBrowserBody'), spellSearch: $('spellSearch'),
     extraSpells: $('extraSpells'), choicesPanel: $('choicesPanel'), choicesBody: $('choicesBody'),
     multiclassEditor: $('multiclassEditor'), addClassBtn: $('addClassBtn'), levelLabel: $('levelLabel'), hpEditor: $('hpEditor'),
+    weaponSelect: $('weaponSelect'), weaponList: $('weaponList'), inventoryList: $('inventoryList'),
+    itemName: $('itemNameInput'), itemQty: $('itemQtyInput'),
     casterSwitch: $('casterSwitch'),
     filterLevels: $('filterLevels'), filterSchools: $('filterSchools'), filterConcGroup: $('filterConcGroup'),
     filterRitualGroup: $('filterRitualGroup'), filterNoV: $('filterNoV'), filterNoS: $('filterNoS'),
@@ -1631,7 +1761,7 @@
     renderFeatSlots(c);
     renderChoices(c);
     renderSpells(c);
-    renderEquipmentChoices();
+    renderEquipmentChoices(c);
   }
 
   function renderHpEditor(c) {
@@ -1692,12 +1822,15 @@
     });
   }
 
-  const CHOICE_TYPE_HINTS = { expertise: 'компетентность', skill: 'навыки', language: 'языки', tool: 'инструменты', ability: 'заклинательная характеристика' };
+  const CHOICE_TYPE_HINTS = {
+    expertise: 'компетентность', skill: 'навыки', language: 'языки', tool: 'инструменты',
+    ability: 'заклинательная характеристика', mastery: 'оружейные приёмы',
+  };
 
   function renderChoices(c) {
     el.choicesPanel.hidden = !c.choices.length;
     const signature = JSON.stringify([c.choices.map(ch => [ch.key, ch.type, ch.count, (ch.options || []).length]),
-      state.choices, [...c.skills], state.level, Object.keys(lists.languages || {}).length]);
+      state.choices, [...c.skills], state.level, Object.keys(lists.languages || {}).length, [...c.attacks.proficient]]);
     renderSection('choices', signature, () => {
       el.choicesBody.innerHTML = c.choices.map(ch => {
         const picks = state.choices[ch.key] || [];
@@ -1730,6 +1863,9 @@
           body = selects(ch.options.map(o => ({ value: o.value, label: o.label })), false);
         } else if (ch.type === 'ability') {
           body = selects(ch.options.map(k => ({ value: k, label: ABILITY[k].name })), false);
+        } else if (ch.type === 'mastery') {
+          body = selects(weaponsForEdition().filter(w => c.attacks.proficient.has(w.key))
+            .map(w => ({ value: w.key, label: `${w.rus} — ${WPN.MASTERY_NAMES[w.mastery] || ''}` })), false);
         }
         return `<div class="choiceGroup choiceBlock">${head}${body}</div>`;
       }).join('');
@@ -1996,19 +2132,49 @@
     if (scroll) el.tabBtnBuilder.scrollIntoView({ block: 'nearest' });
   }
 
-  function renderEquipmentChoices() {
+  function renderEquipmentChoices(c) {
     const { cls, background } = data;
-    renderSection('equip', `${cls?.url}|${background?.url}|${state.classEquip}|${state.bgEquip}`, () => {
+    renderSection('equip', `${cls?.url}|${background?.url}|${state.classEquip}|${state.bgEquip}|${JSON.stringify(state.equip14)}`, () => {
       const group = (title, options, key, selected) => {
         if (!options?.length) return '';
         return `<div class="choiceGroup"><div class="choiceTitle">${title}</div><div class="chips">${options.map((o, i) =>
           `<label><input type="radio" name="${key}" data-equip="${key}" value="${i}"${i === selected ? ' checked' : ''}> Вариант ${esc(o.label || i + 1)}</label>`).join('')}</div></div>`;
       };
-      const html = group('Стартовое снаряжение класса', cls?.startingEquipment, 'classEquip', state.classEquip)
+      let html = group('Стартовое снаряжение класса', cls?.startingEquipment, 'classEquip', state.classEquip)
         + group('Снаряжение предыстории', background?.startingEquipment, 'bgEquip', state.bgEquip);
-      // 2014 data lists equipment as text with "а) или б)" options; it is shown on the sheet.
-      el.equipment.innerHTML = html || (cls?.equipmentMarkup?.length || background?.equipmentMarkup?.length
-        ? '<p class="hint">Стартовое снаряжение класса и предыстории показано в листе.</p>' : '');
+      // 2014: one line per item, with "а) … или б) …" alternatives to pick from.
+      if (cls?.equipmentMarkup?.length) {
+        const { lines } = equipmentLines14(cls.equipmentMarkup);
+        html += `<div class="choiceGroup"><div class="choiceTitle">Стартовое снаряжение класса</div>${lines.map((line, i) => line.options.length > 1
+          ? `<div class="equipLine">${line.options.map((opt, j) => `<label class="check"><input type="radio" name="eq14-${i}" data-equip14="${i}" value="${j}"${(state.equip14[i] ?? 0) === j ? ' checked' : ''}> ${inline(opt)}</label>`).join('')}</div>`
+          : `<div class="equipLine">${inline(line.options[0] || '')}</div>`).join('')}</div>`;
+      }
+      el.equipment.innerHTML = html;
+    });
+
+    // Weapons: picker (grouped, proficient ones marked) and the chosen list.
+    const weapons = weaponsForEdition();
+    renderSection('weapons', JSON.stringify([edition, state.weapons, [...c.attacks.proficient]]), () => {
+      const opt = w => `<option value="${w.key}">${esc(w.rus)} (${esc(w.dmg)})${c.attacks.proficient.has(w.key) ? '' : ' — без владения'}</option>`;
+      el.weaponSelect.innerHTML = `<option value="">— оружие —</option>
+        <optgroup label="Простое">${weapons.filter(w => w.cat === 'simple').map(opt).join('')}</optgroup>
+        <optgroup label="Воинское">${weapons.filter(w => w.cat === 'martial').map(opt).join('')}</optgroup>`;
+      el.weaponList.innerHTML = state.weapons.map((k, i) => {
+        const w = weapons.find(x => x.key === k);
+        return w ? `<label>${esc(w.rus)} <button type="button" class="linkish" data-remove-weapon="${i}" aria-label="Убрать">×</button></label>` : '';
+      }).join('');
+    });
+
+    // Money and inventory.
+    document.querySelectorAll('[data-money]').forEach(input => {
+      if (document.activeElement !== input) input.value = state.money[input.dataset.money] || '';
+    });
+    renderSection('inventory', JSON.stringify(state.inventory), () => {
+      el.inventoryList.innerHTML = state.inventory.map((it, i) => `<div class="pickRow invRow">
+        <input value="${esc(it.name)}" data-inv-name="${i}" maxlength="120" aria-label="Предмет">
+        <input type="number" min="0" value="${it.qty}" data-inv-qty="${i}" class="qty" aria-label="Количество">
+        <button type="button" class="linkish" data-remove-item="${i}" aria-label="Убрать">×</button></div>`).join('')
+        || '<p class="hint">Пусто.</p>';
     });
   }
 
@@ -2154,10 +2320,32 @@
     const equipment = [
       cls?.startingEquipment?.length ? `<dt>Класс (вариант ${esc(cls.startingEquipment[s.classEquip]?.label || '')})</dt><dd>${equipmentText(cls.startingEquipment[s.classEquip])}</dd>` : '',
       background?.startingEquipment?.length ? `<dt>Предыстория (вариант ${esc(background.startingEquipment[s.bgEquip]?.label || '')})</dt><dd>${equipmentText(background.startingEquipment[s.bgEquip])}</dd>` : '',
-      // 2014: equipment is descriptive text (with "а) или б)" choices) rather than structured options.
-      cls?.equipmentMarkup?.length ? `<dt>Класс</dt><dd>${rich(cls.equipmentMarkup)}</dd>` : '',
+      // 2014: equipment is text; show the chosen alternative of each "а) … или б) …" line.
+      cls?.equipmentMarkup?.length ? (() => {
+        const { lines, notes } = equipmentLines14(cls.equipmentMarkup);
+        return `<dt>Класс</dt><dd><ul class="plainList">${lines.map((line, i) =>
+          `<li>${inline(line.options[s.equip14[i] ?? 0] || line.options[0] || '')}</li>`).join('')}</ul>${notes.length ? rich(notes) : ''}</dd>`;
+      })() : '',
       background?.equipmentMarkup?.length ? `<dt>Предыстория</dt><dd>${background.equipmentMarkup.map(inline).join(', ')}</dd>` : '',
+      s.inventory.length ? `<dt>Инвентарь</dt><dd><ul class="plainList">${s.inventory.map(it =>
+        `<li>${esc(it.name)}${it.qty !== 1 ? ` ×${it.qty}` : ''}</li>`).join('')}</ul></dd>` : '',
+      Object.values(s.money).some(Boolean) ? `<dt>Деньги</dt><dd>${[['pp', 'пм'], ['gp', 'зм'], ['ep', 'эм'], ['sp', 'см'], ['cp', 'мм']]
+        .filter(([k]) => s.money[k]).map(([k, label]) => `${s.money[k]} ${label}`).join(', ')}</dd>` : '',
     ].join('');
+
+    const attackHtml = `
+      <section class="box">
+        <h3>Атаки</h3>
+        <div class="spellTableWrap"><table class="spellTable attackTable">
+          <tr><th>Оружие</th><th>Атака</th><th>Урон</th><th>Свойства</th></tr>
+          ${c.attacks.rows.map(a => `<tr${a.prof ? '' : ' class="noProf" title="Нет владения: бонус мастерства не добавлен"'}>
+            <td>${esc(a.name)}${a.prof ? '' : ' <span class="tag">без владения</span>'}${a.mastery ? ` <span class="tag always" title="Оружейный приём">${esc(a.mastery)}</span>` : ''}</td>
+            <td><b>${signed(a.attack)}</b> <span class="muted">${esc(ABILITY[a.ability]?.short || '')}</span></td>
+            <td>${esc(a.damage)}${a.versatile ? ` <span class="muted">(двумя руками ${esc(a.versatile)})</span>` : ''}</td>
+            <td class="muted">${esc([...a.props, ...a.notes].join(', '))}</td></tr>`).join('')}
+        </table></div>
+        ${state.weapons.length ? '' : '<p class="hint">Добавьте оружие в разделе «Снаряжение» конструктора.</p>'}
+      </section>`;
 
     el.sheet.innerHTML = `
       <header class="sheetHeader">
@@ -2185,6 +2373,7 @@
         <div class="stat"><b>${c.speed}</b><span>Скорость, фт.</span><small>${esc([...c.speedNotes, ...movement.slice(1)].join(', '))}</small></div>
       </div>
       ${c.warnings.length ? `<p class="hint warn">${c.warnings.map(esc).join('. ')}</p>` : ''}
+      ${attackHtml}
 
       <div class="columns">
         <div>
@@ -2259,6 +2448,43 @@
     const name = el.sheet.querySelector('.charName');
     if (name) name.textContent = state.name || 'Безымянный герой';
   });
+  $('addWeaponBtn').addEventListener('click', () => {
+    const key = el.weaponSelect.value;
+    if (key) setAndUpdate({ weapons: [...state.weapons, key] });
+  });
+  $('addItemBtn').addEventListener('click', () => {
+    const name = el.itemName.value.trim();
+    if (!name) return;
+    el.itemName.value = '';
+    setAndUpdate({ inventory: [...state.inventory, { name: name.slice(0, 120), qty: clampInt(el.itemQty.value, 1, 9999, 1) }] });
+  });
+  // Copies the chosen starting equipment into the inventory and adds its coins to money.
+  $('startGearBtn').addEventListener('click', () => {
+    const plain = markup => { const d = document.createElement('div'); d.innerHTML = inline(markup); return d.textContent.trim(); };
+    const items = [];
+    const money = { ...state.money };
+    const fromOption = option => {
+      for (const it of option?.items || []) items.push({ name: it.name || it.url, qty: it.quantity || 1 });
+      if (option?.coins) money.gp += option.coins; // TTG gives starting coins in gold
+    };
+    fromOption(data.cls?.startingEquipment?.[state.classEquip]);
+    fromOption(data.background?.startingEquipment?.[state.bgEquip]);
+    if (data.cls?.equipmentMarkup?.length) {
+      equipmentLines14(data.cls.equipmentMarkup).lines.forEach((line, i) => {
+        const text = plain(line.options[state.equip14[i] ?? 0] || line.options[0] || '');
+        if (text) items.push({ name: text.slice(0, 120), qty: 1 });
+      });
+    }
+    for (const m of data.background?.equipmentMarkup || []) {
+      const text = plain(m).replace(/\.$/, '');
+      if (text && !/зм\.?$/i.test(text)) items.push({ name: text.slice(0, 120), qty: 1 });
+    }
+    if (data.background?.startGold) money.gp += data.background.startGold;
+    if (!items.length && money.gp === state.money.gp) return setStatus('Стартового снаряжения нет — выберите класс и предысторию');
+    setAndUpdate({ inventory: [...state.inventory, ...items], money });
+    setStatus(`Добавлено в инвентарь: ${items.length}`);
+  });
+
   el.addClassBtn.addEventListener('click', () => {
     if (state.multiclass.length >= 3 || charLevel() >= 20) return;
     setAndUpdate({ multiclass: [...state.multiclass, { classUrl: '', subclassUrl: '', level: 1, spells: [] }] });
@@ -2457,6 +2683,14 @@
       const key = t.dataset.featOption;
       return setAndUpdate({ feats: { ...state.feats, [key]: { ...(state.feats[key] || {}), option: Number(t.value), picks: [] } } });
     }
+    if (t.dataset.equip14 != null) return setAndUpdate({ equip14: { ...state.equip14, [t.dataset.equip14]: Number(t.value) } });
+    if (t.dataset.money) return setAndUpdate({ money: { ...state.money, [t.dataset.money]: clampInt(t.value, 0, 9999999, 0) } });
+    if (t.dataset.invName != null || t.dataset.invQty != null) {
+      const i = Number(t.dataset.invName ?? t.dataset.invQty);
+      const inventory = state.inventory.map((it, j) => (j !== i ? it
+        : t.dataset.invName != null ? { ...it, name: t.value.slice(0, 120) } : { ...it, qty: clampInt(t.value, 0, 9999, 1) }));
+      return setAndUpdate({ inventory });
+    }
     if (t.name === 'hpMode') return setAndUpdate({ hpMode: t.value });
     if (t.dataset.hpRoll) return setAndUpdate({ hpRolls: { ...state.hpRolls, [t.dataset.hpRoll]: Number(t.value) } });
     if (t.dataset.hpManual != null) return setAndUpdate({ hpManual: t.value === '' ? null : Number(t.value) });
@@ -2506,8 +2740,16 @@
   });
 
   document.addEventListener('click', event => {
-    const t = event.target.closest('[data-action], [data-spell-info], [data-feat-info], [data-option-info], [data-mc-remove], [data-caster]');
+    const t = event.target.closest('[data-action], [data-spell-info], [data-feat-info], [data-option-info], [data-mc-remove], [data-caster], [data-remove-weapon], [data-remove-item]');
     if (!t) return;
+    if (t.dataset.removeWeapon != null) {
+      const i = Number(t.dataset.removeWeapon);
+      return setAndUpdate({ weapons: state.weapons.filter((_, j) => j !== i) });
+    }
+    if (t.dataset.removeItem != null) {
+      const i = Number(t.dataset.removeItem);
+      return setAndUpdate({ inventory: state.inventory.filter((_, j) => j !== i) });
+    }
     if (t.dataset.mcRemove != null) {
       const i = Number(t.dataset.mcRemove);
       return setAndUpdate({ multiclass: state.multiclass.filter((_, j) => j !== i) });

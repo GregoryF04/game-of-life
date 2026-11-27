@@ -96,6 +96,9 @@
       choices: {}, // feature options, expertise, skills, tools, languages: { [choiceKey]: [value, ...] }
       extraSpells: {}, // racial/feat spell choices: { [sourceKey]: { list, picks: { [choiceKey]: [url, ...] } } }
       classSkills: [],
+      // Extra classes: [{ classUrl, subclassUrl, level, spells: [url, …] }]. The fields above
+      // (classUrl, subclassUrl, level, spells) are the main class; character level is the sum.
+      multiclass: [],
       feats: {},
       spells: [],
       armor: 'none', shield: false,
@@ -116,6 +119,10 @@
     if (!s.raceBonus || typeof s.raceBonus !== 'object') s.raceBonus = {};
     if (!s.extraSpells || typeof s.extraSpells !== 'object') s.extraSpells = {};
     if (!s.choices || typeof s.choices !== 'object') s.choices = {};
+    s.multiclass = (Array.isArray(s.multiclass) ? s.multiclass : []).slice(0, 3).map(m => ({
+      classUrl: String(m?.classUrl || ''), subclassUrl: String(m?.subclassUrl || ''),
+      level: clampInt(m?.level, 1, 19, 1), spells: Array.isArray(m?.spells) ? m.spells : [],
+    }));
     // Older saves had a single officialOnly flag. Keep their behaviour: filter on → default
     // book set; filter off → all books ('*'), so nothing gets dropped from them on load.
     s.sources = Array.isArray(raw.sources) ? raw.sources.filter(x => typeof x === 'string')
@@ -349,12 +356,12 @@
       async loadSpell(url) { return T14.normalizeSpell(await api(`spells/${url}`)); },
       // Subclass spell table: rows by class level, always prepared. The warlock table lists
       // spells by spell level and only widens the choice, so all rows apply.
-      async grantedSpells(eff, level) {
+      async grantedSpells(eff, level, classSpells = []) {
         const mode = eff?.expandedList ? 'expanded' : 'always';
         const rows = (eff?.subclassSpells || []).filter(row => mode === 'expanded' || row.level <= level);
         const items = rows.flatMap(row => row.spells.map(s => ({ ...s, level: row.level })));
         const resolved = await Promise.all(items.map(async item => {
-          const spell = data.spells.find(x => x.url === item.url)
+          const spell = classSpells.find(x => x.url === item.url)
             || await PROVIDERS[2014].loadSpell(item.url).catch(() => null);
           return spell ? { spell, level: item.level, mode, from: rus(eff) } : null;
         }));
@@ -400,32 +407,64 @@
     cls: null, subclasses: [], subclass: null, eff: null,
     species: null, lineages: [], lineage: null,
     background: null, feats: {}, featLists: {},
-    spells: [], spellsKey: '', granted: [], spellSources: [], spellCandidates: {},
+    entries: [], spells: [], spellsKey: '', granted: [], spellSources: [], spellCandidates: {},
   };
+
+  // ---------- classes (main + multiclass) ----------
+
+  // Class entries from state: the main class first, then extra classes that have a class set.
+  function classEntriesFromState() {
+    return [
+      { key: 'main', prefix: '', classUrl: state.classUrl, subclassUrl: state.subclassUrl, level: state.level },
+      ...state.multiclass.map((m, i) => ({ key: `mc${i}`, prefix: `mc${i}:`, index: i, classUrl: m.classUrl, subclassUrl: m.subclassUrl, level: m.level }))
+        .filter(e => e.classUrl),
+    ];
+  }
+  // Character level: all class levels together (proficiency bonus, HP, racial spells, …).
+  const charLevel = () => Math.min(20, classEntriesFromState().reduce((n, e) => n + e.level, 0));
+  // Spell picks of one class entry.
+  const spellPicksOf = key => (key === 'main' ? state.spells : state.multiclass[Number(key.slice(2))]?.spells || []);
+  function setSpellPicks(key, spells) {
+    if (key === 'main') return setAndUpdate({ spells });
+    const multiclass = state.multiclass.map((m, i) => (`mc${i}` === key ? { ...m, spells } : m));
+    return setAndUpdate({ multiclass });
+  }
+
+  // Loads one class with its subclass (if unlocked), spell list and granted spells.
+  async function loadClassEntry(entry) {
+    const cls = entry.classUrl ? await P.loadClass(entry.classUrl) : null;
+    const subclasses = cls ? await P.subclasses(cls) : [];
+    const open = cls && entry.subclassUrl && entry.level >= (cls.subclassLevel || 3)
+      && subclasses.some(x => x.url === entry.subclassUrl);
+    const subclass = open ? await P.loadSubclass(entry.subclassUrl) : null;
+    // Subclass detail already merges the parent's features and carries its own casting table.
+    const eff = subclass || cls;
+    const spellsKey = eff ? P.spellListKey({ cls, subclass, eff }) : '';
+    const spells = spellsKey ? await P.loadSpells(spellsKey) : [];
+    const granted = spellsKey ? await P.grantedSpells(eff, entry.level, spells).catch(() => []) : [];
+    return { ...entry, cls, subclasses: Array.isArray(subclasses) ? subclasses : [], subclass, eff, spells, spellsKey, granted };
+  }
 
   async function loadData() {
     const s = state;
     const speciesShort = lists.species.find(x => x.url === s.speciesUrl);
-    const [cls, species, lineages, background] = await Promise.all([
-      s.classUrl ? P.loadClass(s.classUrl) : null,
+    const [entries, species, lineages, background] = await Promise.all([
+      Promise.all(classEntriesFromState().map(loadClassEntry)),
       s.speciesUrl ? P.loadSpecies(s.speciesUrl) : null,
       speciesShort ? P.lineages(speciesShort) : [],
       s.backgroundUrl ? P.loadBackground(s.backgroundUrl) : null,
     ]);
-    const subclasses = cls ? await P.subclasses(cls) : [];
-    data.cls = cls;
-    data.subclasses = Array.isArray(subclasses) ? subclasses : [];
+    data.entries = entries;
+    const main = entries[0];
+    data.cls = main.cls;
+    data.subclasses = main.subclasses;
+    data.subclass = main.subclass;
+    data.eff = main.eff;
     data.species = species;
     data.lineages = Array.isArray(lineages) ? lineages : [];
     data.lineage = s.lineageUrl && data.lineages.some(x => x.url === s.lineageUrl)
       ? await P.loadLineage(s.lineageUrl, data.lineages) : null;
     data.background = background;
-
-    const subclassOpen = cls && s.subclassUrl && s.level >= (cls.subclassLevel || 3)
-      && data.subclasses.some(x => x.url === s.subclassUrl);
-    data.subclass = subclassOpen ? await P.loadSubclass(s.subclassUrl) : null;
-    // Subclass detail already merges the parent's features and carries its own casting table.
-    data.eff = data.subclass || cls;
 
     const slots = featSlots();
     const featUrls = [...new Set(slots.map(slot => slotFeatUrl(slot)).filter(url => url && url !== ASI_FEAT.url))];
@@ -438,12 +477,10 @@
     data.feats = { [ASI_FEAT.url]: ASI_FEAT };
     featUrls.forEach((url, i) => { if (featDetails[i]) data.feats[url] = featDetails[i]; });
 
-    const spellKey = P.spellListKey(data);
-    if (spellKey !== data.spellsKey) {
-      data.spells = spellKey ? await P.loadSpells(spellKey) : [];
-      data.spellsKey = spellKey;
-    }
-    data.granted = spellKey ? await P.grantedSpells(data.eff, s.level).catch(() => []) : [];
+    // Main-class spell data stays on data.* for the parts that only care about one class.
+    data.spells = main.spells;
+    data.spellsKey = main.spellsKey;
+    data.granted = main.granted;
     await loadSpellSources(slots);
   }
 
@@ -451,7 +488,7 @@
   async function loadSpellSources(slots) {
     const feats = slots.map(slot => ({ slot, feat: data.feats[slotFeatUrl(slot)] }))
       .filter(x => x.feat && x.feat.url !== ASI_FEAT.url);
-    const pb = 2 + Math.floor((state.level - 1) / 4);
+    const pb = 2 + Math.floor((charLevel() - 1) / 4);
     const sources = P.spellSources({ species: data.species, lineage: data.lineage, feats, pb, background: data.background });
     // Picked feature options may grant spells (e.g. 2024 invocations).
     for (const ch of collectChoices().filter(x => x.type === 'option')) {
@@ -496,7 +533,7 @@
     const out = new Map();
     for (const src of data.spellSources || []) {
       for (const f of src.fixed) {
-        if (f.spell && f.level <= state.level && !out.has(f.spell.url)) {
+        if (f.spell && f.level <= charLevel() && !out.has(f.spell.url)) {
           out.set(f.spell.url, { ...f.spell, alwaysFrom: src.title, sourceTag: src.tag, grantedAt: f.level });
         }
       }
@@ -514,13 +551,14 @@
     return [...out.values()];
   }
 
-  // Spells the player can pick: the class list plus a warlock's expanded patron list.
-  function spellPool() {
-    const extra = (data.granted || []).filter(g => g.mode === 'expanded' && !data.spells.some(x => x.url === g.spell.url))
+  // Spells the player can pick for a class: its list plus a warlock's expanded patron list.
+  function spellPool(entry = classEntriesLoaded()[0]) {
+    const list = entry?.spells || [];
+    const extra = (entry?.granted || []).filter(g => g.mode === 'expanded' && !list.some(x => x.url === g.spell.url))
       .map(g => ({ ...g.spell, expanded: true }));
-    return extra.length ? sortByName([...data.spells, ...extra]) : data.spells;
+    return extra.length ? sortByName([...list, ...extra]) : list;
   }
-  const alwaysPrepared = () => (data.granted || []).filter(g => g.mode === 'always');
+  const alwaysPrepared = (entry = classEntriesLoaded()[0]) => (entry?.granted || []).filter(g => g.mode === 'always');
 
   // ---------- helpers ----------
 
@@ -683,29 +721,41 @@
       if (fixed) slots.push({ key: 'origin', level: 1, title: 'Черта предыстории', fixed });
     }
     const seen = new Set();
-    for (const f of expandFeatures(data.eff?.features)) {
-      if (f.level > state.level) continue;
-      // Class features that pick a feat of a category (2024 fighting style), not the ASI ones.
-      // (Scaling copies from expandFeatures carry no mechanics, so each choice appears once.)
-      for (const ch of f.mechanics?.choices || []) {
-        if (ch.type !== 'FEAT' || ASI_CHOICE_KEYS.has(ch.key)) continue;
-        const key = `cf:${f.key || f.name}:${ch.key}`;
-        if (seen.has(key)) continue;
+    // Every class gives its own ASI / feat slots by its own class level. The main class keeps
+    // the original keys ("lvl4"); extra classes are prefixed ("mc0:lvl4").
+    for (const entry of classEntriesLoaded()) {
+      const multi = data.entries.length > 1;
+      const tag = multi ? ` (${rus(entry.cls)})` : '';
+      for (const f of expandFeatures(entry.eff?.features)) {
+        if (f.level > entry.level) continue;
+        // Class features that pick a feat of a category (2024 fighting style), not the ASI ones.
+        // (Scaling copies from expandFeatures carry no mechanics, so each choice appears once.)
+        for (const ch of f.mechanics?.choices || []) {
+          if (ch.type !== 'FEAT' || ASI_CHOICE_KEYS.has(ch.key)) continue;
+          const key = `${entry.prefix}cf:${f.key || f.name}:${ch.key}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          slots.push({ key, level: f.level, title: `${f.name} · ${f.level} ур.${tag}`, categories: ch.featCategories || ['GENERAL'] });
+        }
+        const epic = /эпическ\S* черт/i.test(f.name || '');
+        if (!f.abilityImprovement && !epic) continue;
+        let key = `${entry.prefix}lvl${f.level}`;
+        while (seen.has(key)) key += 'b';
         seen.add(key);
-        slots.push({ key, level: f.level, title: `${f.name} · ${f.level} ур.`, categories: ch.featCategories || ['GENERAL'] });
+        // 2014: the slot is "ASI or a feat" and defaults to the ASI.
+        slots.push({
+          key, level: f.level, title: `${f.name} · ${f.level} ур.${tag}`, epic, asi: P.rules.asiPseudoFeat,
+          categories: epic ? ['EPIC_BOON', 'GENERAL'] : ['GENERAL'],
+        });
       }
-      const epic = /эпическ\S* черт/i.test(f.name || '');
-      if (!f.abilityImprovement && !epic) continue;
-      let key = `lvl${f.level}`;
-      while (seen.has(key)) key += 'b';
-      seen.add(key);
-      // 2014: the slot is "ASI or a feat" and defaults to the ASI.
-      slots.push({
-        key, level: f.level, title: `${f.name} · ${f.level} ур.`, epic, asi: P.rules.asiPseudoFeat,
-        categories: epic ? ['EPIC_BOON', 'GENERAL'] : ['GENERAL'],
-      });
     }
     return slots;
+  }
+
+  // Loaded class entries; before the first load, the main class from data.*.
+  function classEntriesLoaded() {
+    if (data.entries?.length) return data.entries;
+    return [{ key: 'main', prefix: '', level: state.level, cls: data.cls, eff: data.eff, subclass: data.subclass, subclasses: data.subclasses, spells: data.spells, granted: data.granted }];
   }
   function slotFeatUrl(slot) {
     if (slot.fixed) return slot.fixed;
@@ -727,15 +777,16 @@
   // Every choice the character currently has, from class features, race/subrace and feats.
   // key is stable across renders and is where the picks live (state.choices[key]).
   function collectChoices() {
-    const L = state.level;
     const out = [];
-    const fromMechanics = (prefix, title, mechanics, level) => {
+    // L: the level that gates and scales this choice (class level for class features,
+    // character level for race and feats).
+    const fromMechanics = (prefix, title, mechanics, level, L) => {
       for (const ch of mechanics?.choices || []) {
         if (ch.requiredLevel && ch.requiredLevel > L) continue;
         const count = scaledCount(ch, L);
         if (!count) continue;
         const key = `${prefix}:${ch.key}`;
-        const base = { key, title, label: ch.label || title, count, level };
+        const base = { key, title, label: ch.label || title, count, level, classLevel: L };
         if (ch.type === 'SKILL') {
           out.push({
             ...base, type: ch.grants === 'EXPERTISE' ? 'expertise' : 'skill',
@@ -751,30 +802,62 @@
         // FEAT → feat slots; CANTRIP/SPELL → spells; WEAPON_MASTERY → attacks section.
       }
     };
-    for (const f of data.eff?.features || []) {
-      if (f.level > L || (data.subclass && f.hideInSubclasses)) continue;
-      if (f.options?.length && f.optionsChoice) {
-        const count = scaledCount(f.optionsChoice, L);
-        if (count) {
-          out.push({
-            key: `opt:${f.key || f.name}`, type: 'option', title: f.name,
-            label: f.optionsChoice.label || f.optionsName || f.name, count, level: f.level, options: f.options,
-          });
+    const entries = classEntriesLoaded();
+    for (const entry of entries) {
+      const L = entry.level;
+      const tag = entries.length > 1 ? ` (${rus(entry.cls)})` : '';
+      for (const f of entry.eff?.features || []) {
+        if (f.level > L || (entry.subclass && f.hideInSubclasses)) continue;
+        if (f.options?.length && f.optionsChoice) {
+          const count = scaledCount(f.optionsChoice, L);
+          if (count) {
+            out.push({
+              key: `${entry.prefix}opt:${f.key || f.name}`, type: 'option', title: f.name + tag,
+              label: f.optionsChoice.label || f.optionsName || f.name, count, level: f.level, classLevel: L, options: f.options,
+            });
+          }
         }
+        fromMechanics(`${entry.prefix}cls:${f.key || f.name}`, f.name + tag, f.mechanics, f.level, L);
       }
-      fromMechanics(`cls:${f.key || f.name}`, f.name, f.mechanics, f.level);
+      // Multiclassing into bard, ranger or rogue grants one skill from the class list.
+      const mcSkill = entry.key !== 'main' && MULTICLASS_SKILL[baseClass(entry.cls)];
+      if (mcSkill) {
+        out.push({
+          key: `${entry.prefix}mc-skill`, type: 'skill', title: `Мультикласс: ${rus(entry.cls)}`, label: 'Навык класса',
+          count: 1, level: 1, classLevel: L,
+          options: mcSkill === 'any' ? [] : entry.cls?.proficiency?.skillData?.skills || [], onlyIfNotProficient: true,
+        });
+      }
     }
+    const CL = charLevel();
     for (const race of [data.species, data.lineage]) {
       if (!race) continue;
-      fromMechanics(`race:${race.url}`, rus(race), race.mechanics, 1);
-      for (const f of race.features || []) fromMechanics(`race:${race.url}:${rus(f)}`, `${rus(f)} (${rus(race)})`, f.mechanics, f.level || 1);
+      fromMechanics(`race:${race.url}`, rus(race), race.mechanics, 1, CL);
+      for (const f of race.features || []) fromMechanics(`race:${race.url}:${rus(f)}`, `${rus(f)} (${rus(race)})`, f.mechanics, f.level || 1, CL);
     }
     for (const slot of featSlots()) {
       const feat = data.feats[slotFeatUrl(slot)];
-      if (feat && feat.url !== ASI_FEAT.url) fromMechanics(`feat:${slot.key}`, rus(feat), feat.mechanics, slot.level);
+      if (feat && feat.url !== ASI_FEAT.url) fromMechanics(`feat:${slot.key}`, rus(feat), feat.mechanics, slot.level, CL);
     }
     return out;
   }
+
+  // Class identity without the edition/book suffix: "fighter-phb" / "fighter" → "fighter".
+  const baseClass = cls => String(cls?.parent?.url || cls?.url || '').split('/')[0].replace(/-[a-z0-9]+$/, '');
+
+  // Multiclassing rules (PHB, same in 2014 and 2024): requirements, armor gained, extra skill.
+  const MULTICLASS_REQ = {
+    barbarian: [['STRENGTH']], bard: [['CHARISMA']], cleric: [['WISDOM']], druid: [['WISDOM']],
+    fighter: [['STRENGTH', 'DEXTERITY']], monk: [['DEXTERITY'], ['WISDOM']], paladin: [['STRENGTH'], ['CHARISMA']],
+    ranger: [['DEXTERITY'], ['WISDOM']], rogue: [['DEXTERITY']], sorcerer: [['CHARISMA']], warlock: [['CHARISMA']],
+    wizard: [['INTELLIGENCE']], artificer: [['INTELLIGENCE']],
+  };
+  const MULTICLASS_ARMOR = {
+    barbarian: ['SHIELD'], bard: ['LIGHT'], cleric: ['LIGHT', 'MEDIUM', 'SHIELD'], druid: ['LIGHT', 'MEDIUM', 'SHIELD'],
+    fighter: ['LIGHT', 'MEDIUM', 'SHIELD'], paladin: ['LIGHT', 'MEDIUM', 'SHIELD'], ranger: ['LIGHT', 'MEDIUM', 'SHIELD'],
+    rogue: ['LIGHT'], warlock: ['LIGHT'], artificer: ['LIGHT', 'MEDIUM', 'SHIELD'],
+  };
+  const MULTICLASS_SKILL = { bard: 'any', ranger: 'list', rogue: 'list' };
 
   // The player's picks for a choice, deduplicated and capped at its count.
   function choicePicks(choice, valid = () => true) {
@@ -788,7 +871,7 @@
   // Options picked for an option-type choice (invocations, metamagic, maneuvers, …).
   // Options below their required class level are ignored until the character gets there.
   function pickedOptions(choice) {
-    const allowed = o => o && !(o.requiredClassLevel && o.requiredClassLevel > state.level);
+    const allowed = o => o && !(o.requiredClassLevel && o.requiredClassLevel > (choice.classLevel || state.level));
     return choicePicks(choice, v => allowed(choice.options.find(o => o.key === v)))
       .map(v => choice.options.find(o => o.key === v));
   }
@@ -851,9 +934,12 @@
 
   function compute() {
     const s = state;
-    const L = s.level;
+    const L = s.level; // main class level
+    const CL = charLevel(); // character level (all classes)
+    const entries = classEntriesLoaded();
+    const multi = entries.length > 1;
     const { cls, eff, species, lineage, background } = data;
-    const pb = 2 + Math.floor((L - 1) / 4);
+    const pb = 2 + Math.floor((CL - 1) / 4);
 
     // Ability scores: base + background + feats (capped by each bonus's "upto").
     const base = baseScores();
@@ -889,14 +975,16 @@
       hp: 0, senses: {}, resist: new Set(), immune: new Set(), vuln: new Set(), condImm: new Set(),
       initPB: false, initBonus: 0, passiveBonus: 0, skills: new Set(), saves: new Set(), counters: [],
     };
-    const addMech = (m, acquired, from) => {
+    // classLevel: level of the class the mechanics come from (counters scale with it);
+    // race and feat mechanics use the character level.
+    const addMech = (m, acquired, from, classLevel = CL) => {
       if (!m) return;
       const mo = m.modifiers || {};
       if (mo.hitPoints && (mo.hitPoints.perAcquisitionLevel || mo.hitPoints.perLevelAfterAcquisition)) {
         // "perAcquisitionLevel" is per character level at the moment the trait is gained
         // (Tough at level 4 gives +8 at once), then "perLevelAfterAcquisition" for each later level.
-        const gained = Math.min(acquired, L);
-        mech.hp += (mo.hitPoints.perAcquisitionLevel || 0) * gained + (mo.hitPoints.perLevelAfterAcquisition || 0) * Math.max(0, L - gained);
+        const gained = Math.min(acquired, CL);
+        mech.hp += (mo.hitPoints.perAcquisitionLevel || 0) * gained + (mo.hitPoints.perLevelAfterAcquisition || 0) * Math.max(0, CL - gained);
       }
       for (const sense of mo.senses || []) {
         if (sense?.type) mech.senses[sense.type] = Math.max(mech.senses[sense.type] || 0, sense.range || 0);
@@ -911,16 +999,22 @@
       const prof = m.proficiencies || {};
       (prof.skills || []).forEach(x => typeof x === 'string' && mech.skills.add(x));
       (prof.savingThrows || []).forEach(x => typeof x === 'string' && mech.saves.add(x));
-      (m.counters || []).forEach(c => mech.counters.push({ ...c, from }));
+      (m.counters || []).forEach(c => mech.counters.push({ ...c, from, classLevel }));
     };
 
-    const subclassApplied = Boolean(data.subclass);
-    const classFeatures = expandFeatures(eff?.features)
-      .filter(f => f.level <= L && !(subclassApplied && f.hideInSubclasses));
-    if (eff) addMech(eff.mechanics, 1, rus(eff));
-    classFeatures.forEach(f => addMech(f.mechanics, f.level, f.name));
+    // Features of every class up to that class's level, tagged with the class when multiclassed.
+    const classFeatures = [];
+    for (const entry of entries) {
+      if (entry.eff) addMech(entry.eff.mechanics, 1, rus(entry.eff), entry.level);
+      for (const f of expandFeatures(entry.eff?.features)) {
+        if (f.level > entry.level || (entry.subclass && f.hideInSubclasses)) continue;
+        classFeatures.push(multi ? { ...f, classTag: rus(entry.cls), entryKey: entry.key } : { ...f, entryKey: entry.key });
+        addMech(f.mechanics, f.level, f.name, entry.level);
+      }
+    }
+    const featureOf = (entry, re) => classFeatures.some(f => f.entryKey === entry.key && re.test(f.name || ''));
     const speciesFeatures = [...(species?.features || []), ...(lineage?.features || [])]
-      .filter(f => (f.level || 1) <= L);
+      .filter(f => (f.level || 1) <= CL);
     speciesFeatures.forEach(f => addMech(f.mechanics, f.level || 1, rus(f)));
     // 2014 races keep senses / HP bonuses on the race itself rather than on a trait.
     addMech(species?.mechanics, 1, rus(species));
@@ -971,27 +1065,36 @@
     const jackOfAllTrades = classFeatures.some(f => /мастер на все руки/i.test(f.name || ''));
     const halfPb = jackOfAllTrades ? Math.floor(pb / 2) : 0;
 
-    // Hit points
+    // Hit points: the main class's first level at max, every other level at its die's average.
     const hd = eff?.hitDice || cls?.hitDice;
+    const hitDice = entries.filter(e => e.eff?.hitDice || e.cls?.hitDice)
+      .map(e => ({ level: e.level, die: e.eff?.hitDice || e.cls.hitDice }));
     let hp = 0;
     if (hd) {
       hp = Math.max(1, hd.maxValue + mods.CONSTITUTION);
-      for (let lvl = 2; lvl <= L; lvl++) hp += Math.max(1, hd.avg + mods.CONSTITUTION);
+      hitDice.forEach((h, i) => {
+        for (let lvl = i === 0 ? 2 : 1; lvl <= h.level; lvl++) hp += Math.max(1, h.die.avg + mods.CONSTITUTION);
+      });
       hp += mech.hp;
     }
 
-    // Armor class
+    // Armor class. Extra classes add only the armor their multiclass rules grant.
     const armor = ARMORS.find(a => a.id === s.armor) || ARMORS[0];
-    const armorCats = cls?.proficiency?.armorData?.category || [];
+    const armorCats = [...new Set([...(cls?.proficiency?.armorData?.category || []),
+      ...entries.slice(1).flatMap(e => MULTICLASS_ARMOR[baseClass(e.cls)] || [])])];
     let ac;
     let acNote = armor.id === 'none' ? 'без доспехов' : armor.name.replace(/\s*\(.*\)/, '');
-    const hasUnarmoredDefense = classFeatures.some(f => /защита без доспехов/i.test(f.name || ''));
+    const barbarian = entries.find(e => baseClass(e.cls) === 'barbarian' && featureOf(e, /защита без доспехов/i));
+    const monk = entries.find(e => baseClass(e.cls) === 'monk' && featureOf(e, /защита без доспехов/i));
     const hasDraconicResilience = classFeatures.some(f => /драконья устойчивость/i.test(f.name || ''));
     if (armor.id === 'none') {
-      ac = 10 + mods.DEXTERITY;
-      if (hasDraconicResilience) { ac = 13 + mods.DEXTERITY; acNote = 'драконья устойчивость'; }
-      if (hasUnarmoredDefense && cls?.url?.startsWith('barbarian')) { ac += mods.CONSTITUTION; acNote = 'защита без доспехов'; }
-      if (hasUnarmoredDefense && cls?.url?.startsWith('monk') && !s.shield) { ac += mods.WISDOM; acNote = 'защита без доспехов'; }
+      // Unarmored Defense from two classes does not stack: take the better one.
+      const options = [10 + mods.DEXTERITY];
+      if (hasDraconicResilience) options.push(13 + mods.DEXTERITY);
+      if (barbarian) options.push(10 + mods.DEXTERITY + mods.CONSTITUTION);
+      if (monk && !s.shield) options.push(10 + mods.DEXTERITY + mods.WISDOM);
+      ac = Math.max(...options);
+      if (ac > 10 + mods.DEXTERITY) acNote = hasDraconicResilience && ac === 13 + mods.DEXTERITY ? 'драконья устойчивость' : 'защита без доспехов';
     } else {
       ac = armor.base + Math.min(mods.DEXTERITY, armor.maxDex);
     }
@@ -1004,88 +1107,76 @@
     // Speed bonuses: monk Unarmored Movement (from the class table), barbarian Fast Movement.
     let speedBonus = 0;
     const speedNotes = [];
-    const unarmoredCol = (eff?.table || []).find(col => /(скорость|движение) без доспехов/i.test(col.name || ''));
-    const unarmoredValue = unarmoredCol ? parseInt(String(scalingValue(unarmoredCol, L) || '').replace(/[^\d]/g, ''), 10) : 0;
-    if (unarmoredValue && armor.id === 'none' && !s.shield) { speedBonus += unarmoredValue; speedNotes.push(`+${unarmoredValue} без доспехов`); }
+    for (const entry of entries) {
+      const col = (entry.eff?.table || []).find(c => /(скорость|движение) без доспехов/i.test(c.name || ''));
+      const value = col ? parseInt(String(scalingValue(col, entry.level) || '').replace(/[^\d]/g, ''), 10) : 0;
+      if (value && armor.id === 'none' && !s.shield) { speedBonus += value; speedNotes.push(`+${value} без доспехов`); }
+    }
     if (classFeatures.some(f => /быстрое передвижение/i.test(f.name || '')) && armor.cat !== 'HEAVY') {
       speedBonus += 10; speedNotes.push('+10 быстрое передвижение');
     }
     const warnings = [];
+    // Multiclassing needs 13 in the key abilities of the main class and of each new class.
+    if (multi) {
+      for (const entry of entries) {
+        for (const group of MULTICLASS_REQ[baseClass(entry.cls)] || []) {
+          if (!group.some(k => scores[k] >= 13)) {
+            warnings.push(`Мультикласс «${rus(entry.cls)}»: нужно ${group.map(k => ABILITY[k].name).join(' или ')} 13+`);
+          }
+        }
+      }
+    }
     if (armor.cat && cls && !armorCats.includes(armor.cat)) warnings.push(`Нет владения доспехами: ${ARMOR_CAT_NAMES[armor.cat]}`);
     if (s.shield && cls && !armorCats.includes('SHIELD')) warnings.push('Нет владения щитами');
 
     // Spellcasting
     const extraSpells = extraSpellsNow(); // racial and feat spells, also for non-casters
-    let spell = null;
-    if (eff && isCasterType(eff.casterType) && L >= (eff.spellcastingStartLevel || 1)) {
-      let slotsRow = [];
-      let pact = null;
-      if (eff.casterType === 'PACT') {
-        // 2014 warlock tables carry slot count/level columns; otherwise use the standard table.
-        const count = Number(scalingValue(tableColumn(eff, 'PACT_SLOTS'), L)) || PACT_SLOT_COUNT[L - 1];
-        const level = Number(scalingValue(tableColumn(eff, 'PACT_LEVEL'), L)) || Math.min(5, Math.ceil(L / 2));
-        pact = { count, level };
-      } else if (eff.slotTable) {
-        slotsRow = eff.slotTable[L - 1] || []; // 2014: slots straight from the class table
-      } else {
-        const divisor = eff.casterType === 'HALF' ? 2 : eff.casterType === 'THIRD' ? 3 : 1;
-        slotsRow = FULL_SLOTS[Math.max(1, Math.ceil(L / divisor)) - 1] || [];
-      }
-      const maxLevel = pact ? pact.level : slotsRow.length;
-      const abilityKey = eff.spellcastingAbility;
-      const abilityMod = mods[abilityKey] ?? 0;
-      const cantripLimit = Number(scalingValue(tableColumn(eff, 'CANTRIPS_KNOWN'), L)) || 0;
-      // Limit on levelled spells: 2024 "prepared" column, 2014 "known" column, or the
-      // 2014 prepared-caster formula (ability mod + class level, halved for half casters).
-      const preparedRaw = scalingValue(tableColumn(eff, 'PREPARED_SPELLS'), L);
-      const knownRaw = scalingValue(tableColumn(eff, 'SPELLS_KNOWN'), L);
-      let preparedLimit = null;
-      let limitLabel = 'Подготовлено';
-      if (preparedRaw != null) preparedLimit = Number(preparedRaw) || 0;
-      else if (knownRaw != null) { preparedLimit = Number(knownRaw) || 0; limitLabel = 'Известно'; }
-      else if (eff.edition === '2014') preparedLimit = Math.max(1, abilityMod + (eff.preparedHalfLevel ? Math.floor(L / 2) : L));
-      // Always-prepared spells (domain, oath, …) never count against the limits, even if the
-      // player also ticked one of them.
-      // Racial and feat spells are free the same way.
-      const alwaysSpells = alwaysPrepared().map(g => ({ ...g.spell, alwaysFrom: g.from, grantedAt: g.level }));
-      for (const x of extraSpells) if (!alwaysSpells.some(a => a.url === x.url)) alwaysSpells.push(x);
-      const alwaysUrls = new Set(alwaysSpells.map(x => x.url));
-      const chosen = spellPool().filter(sp => s.spells.includes(sp.url) && !alwaysUrls.has(sp.url));
-      const cantrips = chosen.filter(sp => sp.level === 0);
-      const leveled = chosen.filter(sp => sp.level > 0 && sp.level <= maxLevel);
-      spell = {
-        type: eff.casterType, abilityKey, abilityMod,
-        dc: 8 + pb + abilityMod, attack: pb + abilityMod,
-        slotsRow, pact, maxLevel, cantripLimit, preparedLimit, limitLabel, cantrips, leveled,
-        always: alwaysSpells, alwaysUrls,
-      };
+    // One casting block per spellcasting class; racial/feat spells ride on the first one.
+    const casters = [];
+    for (const entry of entries) {
+      const e = entry.eff;
+      if (!e || !isCasterType(e.casterType) || entry.level < (e.spellcastingStartLevel || 1)) continue;
+      const sp = castingFor(entry, { mods, pb, extraSpells: casters.length ? [] : extraSpells });
+      sp.label = rus(entry.cls) + (entry.subclass ? ` (${rus(entry.subclass)})` : '');
+      casters.push(sp);
     }
+    // Two or more classes with regular slots share the multiclass spell-slot table.
+    const slotCasters = casters.filter(c => c.type !== 'PACT');
+    if (slotCasters.length >= 2) {
+      const casterLevel = slotCasters.reduce((n, c) => n + casterContribution(c), 0);
+      const shared = FULL_SLOTS[Math.min(20, Math.max(1, casterLevel)) - 1] || [];
+      slotCasters.forEach(c => { c.slotsRow = shared; c.sharedSlots = casterLevel; });
+    }
+    const spell = casters[0] || null;
 
-    // Class resources: every non-spell column of the class table, plus counters from mechanics.
+    // Class resources: every non-spell column of each class table, plus counters from mechanics.
     const resources = [];
-    for (const col of eff?.table || []) {
-      if (['CANTRIPS_KNOWN', 'PREPARED_SPELLS', 'SPELLS_KNOWN', 'PACT_SLOTS', 'PACT_LEVEL'].includes(col.purpose)) continue;
-      if (/(скорость|движение) без доспехов/i.test(col.name || '')) continue; // applied to speed
-      const v = scalingValue(col, L);
-      if (v != null && v !== '' && v !== '—' && v !== '-') resources.push({ name: col.name, value: v });
+    const tableKeys = new Set();
+    for (const entry of entries) {
+      for (const col of entry.eff?.table || []) {
+        tableKeys.add(col.key);
+        if (['CANTRIPS_KNOWN', 'PREPARED_SPELLS', 'SPELLS_KNOWN', 'PACT_SLOTS', 'PACT_LEVEL'].includes(col.purpose)) continue;
+        if (/(скорость|движение) без доспехов/i.test(col.name || '')) continue; // applied to speed
+        const v = scalingValue(col, entry.level);
+        if (v != null && v !== '' && v !== '—' && v !== '-') resources.push({ name: col.name + (multi ? ` (${rus(entry.cls)})` : ''), value: v });
+      }
     }
-    const tableKeys = new Set((eff?.table || []).map(col => col.key));
     for (const c of mech.counters) {
       if (c.key && tableKeys.has(c.key)) continue; // already shown from the class table
       let max = c.max;
       if (Array.isArray(c.scaling) && c.scaling.length) {
         max = null;
-        for (const step of c.scaling) if (step.level <= L) max = step.max;
+        for (const step of c.scaling) if (step.level <= c.classLevel) max = step.max;
         if (max == null) continue; // not unlocked yet
       }
-      resources.push({ name: c.name, value: evalCounter(max, { pb, L, mods }), recovery: c.recovery });
+      resources.push({ name: c.name, value: evalCounter(max, { pb, L: c.classLevel, mods }), recovery: c.recovery });
     }
 
     // Feat prerequisites, checked against the finished character.
     const raceName = `${rus(species)} ${rus(lineage)}`.toLowerCase();
     const featIssues = {};
     for (const { slot, feat } of feats) {
-      const issues = prerequisiteIssues(feat, { scores, L, isCaster: Boolean(spell) || extraSpells.length > 0, armorCats, raceName });
+      const issues = prerequisiteIssues(feat, { scores, L: CL, isCaster: Boolean(spell) || extraSpells.length > 0, armorCats, raceName });
       if (issues.length) {
         featIssues[slot.key] = issues;
         warnings.push(`Черта «${rus(feat)}»: не выполнено — ${issues.join(', ')}`);
@@ -1093,7 +1184,7 @@
     }
 
     return {
-      L, pb, base, scores, mods, sources, bgAbils, slots, feats,
+      L, CL, multi, entries, casters, hitDice, pb, base, scores, mods, sources, bgAbils, slots, feats,
       saves, skills, bgSkills, classSkills, skillData,
       expertise, halfPb, jackOfAllTrades, choices, chosenOptions, chosenLanguages, chosenTools, featIssues,
       hp, hd, ac, acNote, warnings,
@@ -1102,6 +1193,67 @@
       speed: (props.movement?.base || 30) + speedBonus, speedNotes, movement: props.movement || {}, size: props.size, creatureType: props.type,
       mech, classFeatures, speciesFeatures, spell, resources,
     };
+  }
+
+  // Spellcasting of one class entry at its own class level.
+  function castingFor(entry, { mods, pb, extraSpells }) {
+    const eff = entry.eff;
+    const L = entry.level;
+    let slotsRow = [];
+    let pact = null;
+    if (eff.casterType === 'PACT') {
+      // 2014 warlock tables carry slot count/level columns; otherwise use the standard table.
+      const count = Number(scalingValue(tableColumn(eff, 'PACT_SLOTS'), L)) || PACT_SLOT_COUNT[L - 1];
+      const level = Number(scalingValue(tableColumn(eff, 'PACT_LEVEL'), L)) || Math.min(5, Math.ceil(L / 2));
+      pact = { count, level };
+    } else if (eff.slotTable) {
+      slotsRow = eff.slotTable[L - 1] || []; // 2014: slots straight from the class table
+    } else {
+      const divisor = eff.casterType === 'HALF' ? 2 : eff.casterType === 'THIRD' ? 3 : 1;
+      slotsRow = FULL_SLOTS[Math.max(1, Math.ceil(L / divisor)) - 1] || [];
+    }
+    // Which spell levels this class may pick is set by its own slots, even when multiclassed.
+    const maxLevel = pact ? pact.level : slotsRow.length;
+    const abilityKey = eff.spellcastingAbility;
+    const abilityMod = mods[abilityKey] ?? 0;
+    const cantripLimit = Number(scalingValue(tableColumn(eff, 'CANTRIPS_KNOWN'), L)) || 0;
+    // Limit on levelled spells: 2024 "prepared" column, 2014 "known" column, or the
+    // 2014 prepared-caster formula (ability mod + class level, halved for half casters).
+    const preparedRaw = scalingValue(tableColumn(eff, 'PREPARED_SPELLS'), L);
+    const knownRaw = scalingValue(tableColumn(eff, 'SPELLS_KNOWN'), L);
+    let preparedLimit = null;
+    let limitLabel = 'Подготовлено';
+    if (preparedRaw != null) preparedLimit = Number(preparedRaw) || 0;
+    else if (knownRaw != null) { preparedLimit = Number(knownRaw) || 0; limitLabel = 'Известно'; }
+    else if (eff.edition === '2014') preparedLimit = Math.max(1, abilityMod + (eff.preparedHalfLevel ? Math.floor(L / 2) : L));
+    // Always-prepared spells (domain, oath, …) never count against the limits, even if the
+    // player also ticked one of them. Racial and feat spells are free the same way.
+    const alwaysSpells = alwaysPrepared(entry).map(g => ({ ...g.spell, alwaysFrom: g.from, grantedAt: g.level }));
+    for (const x of extraSpells) if (!alwaysSpells.some(a => a.url === x.url)) alwaysSpells.push(x);
+    const alwaysUrls = new Set(alwaysSpells.map(x => x.url));
+    const picks = spellPicksOf(entry.key);
+    const chosen = spellPool(entry).filter(sp => picks.includes(sp.url) && !alwaysUrls.has(sp.url));
+    return {
+      entryKey: entry.key, entry, classLevel: L, edition: eff.edition || '2024',
+      type: eff.casterType, abilityKey, abilityMod,
+      dc: 8 + pb + abilityMod, attack: pb + abilityMod,
+      slotsRow, pact, maxLevel, cantripLimit, preparedLimit, limitLabel,
+      cantrips: chosen.filter(sp => sp.level === 0),
+      leveled: chosen.filter(sp => sp.level > 0 && sp.level <= maxLevel),
+      always: alwaysSpells, alwaysUrls,
+    };
+  }
+
+  // Caster levels a class adds to the multiclass slot table (PHB). 2024 rounds half casters
+  // up; 2014 rounds down (artificer up). Third casters round down in both.
+  function casterContribution(caster) {
+    const L = caster.classLevel;
+    if (caster.type === 'FULL') return L;
+    if (caster.type === 'HALF') {
+      return caster.edition === '2024' || baseClass(caster.entry.cls) === 'artificer' ? Math.ceil(L / 2) : Math.floor(L / 2);
+    }
+    if (caster.type === 'THIRD') return Math.floor(L / 3);
+    return 0;
   }
 
   const ABILITY_STEMS = [
@@ -1172,6 +1324,8 @@
     spellsTab: $('spellsTab'), builderTab: $('builderTab'), tabBtnSpells: $('tabBtnSpells'), tabBtnBuilder: $('tabBtnBuilder'),
     tabSpellCount: $('tabSpellCount'), spellBrowserBody: $('spellBrowserBody'), spellSearch: $('spellSearch'),
     extraSpells: $('extraSpells'), choicesPanel: $('choicesPanel'), choicesBody: $('choicesBody'),
+    multiclassEditor: $('multiclassEditor'), addClassBtn: $('addClassBtn'), levelLabel: $('levelLabel'),
+    casterSwitch: $('casterSwitch'),
     filterLevels: $('filterLevels'), filterSchools: $('filterSchools'), filterConcGroup: $('filterConcGroup'),
     filterRitualGroup: $('filterRitualGroup'), filterNoV: $('filterNoV'), filterNoS: $('filterNoS'),
     filterNoM: $('filterNoM'), filterChosen: $('filterChosen'), filterAvailable: $('filterAvailable'),
@@ -1354,10 +1508,45 @@
     }
     el.abilityHint.innerHTML = hint;
 
+    renderMulticlass(c);
     renderFeatSlots(c);
     renderChoices(c);
     renderSpells(c);
     renderEquipmentChoices();
+  }
+
+  // Extra classes: class, subclass (when unlocked), level and a remove button each.
+  function renderMulticlass(c) {
+    const others = state.multiclass.reduce((n, m) => n + (m.classUrl ? m.level : 0), 0);
+    el.level.max = String(Math.max(1, 20 - others));
+    el.levelLabel.textContent = state.multiclass.length ? 'Уровень основного класса' : 'Уровень';
+    el.addClassBtn.hidden = state.multiclass.length >= 3 || c.CL >= 20 || !state.classUrl;
+    const loaded = Object.fromEntries((data.entries || []).map(e => [e.key, e]));
+    const signature = JSON.stringify([state.multiclass, state.classUrl, sourcesKey(), c.CL,
+      (data.entries || []).map(e => [e.key, e.subclasses?.length, e.cls?.subclassLevel])]);
+    renderSection('multiclass', signature, () => {
+      if (!state.multiclass.length) { el.multiclassEditor.innerHTML = ''; return; }
+      const taken = new Set([state.classUrl, ...state.multiclass.map(m => m.classUrl)]);
+      el.multiclassEditor.innerHTML = `<div class="choiceTitle">Мультикласс · уровень персонажа ${c.CL}</div>${state.multiclass.map((m, i) => {
+        const entry = loaded[`mc${i}`];
+        const classOptions = lists.classes.filter(x => x.url === m.classUrl || (!taken.has(x.url) && isAllowed(x)));
+        const subLevel = entry?.cls?.subclassLevel || 3;
+        const sub = entry?.cls?.hasSubclasses && entry.subclasses?.length
+          ? `<label>${esc(entry.cls.subclassLabel || 'Подкласс')}${m.level < subLevel ? ` <span class="muted">(с ${subLevel} ур.)</span>` : ''}
+              <select data-mc-field="subclassUrl" data-mc="${i}"${m.level < subLevel ? ' disabled' : ''}><option value="">— не выбран —</option>${
+                sortByName(entry.subclasses).filter(x => isAllowed(x) || x.url === m.subclassUrl).map(x =>
+                  `<option value="${esc(x.url)}"${x.url === m.subclassUrl ? ' selected' : ''}>${esc(rus(x))} [${esc(x.source?.name?.label || '')}]</option>`).join('')}</select></label>` : '';
+        return `<div class="mcRow">
+          <div class="row">
+            <label>Класс <select data-mc-field="classUrl" data-mc="${i}"><option value="">— выберите —</option>${classOptions.map(x =>
+              `<option value="${esc(x.url)}"${x.url === m.classUrl ? ' selected' : ''}>${esc(rus(x))} [${esc(x.source?.name?.label || '')}]</option>`).join('')}</select></label>
+            <label>Уровень <input type="number" min="1" max="19" value="${m.level}" data-mc-field="level" data-mc="${i}"></label>
+          </div>
+          ${sub}
+          <button type="button" class="linkish" data-mc-remove="${i}">убрать класс</button>
+        </div>`;
+      }).join('')}`;
+    });
   }
 
   const CHOICE_TYPE_HINTS = { expertise: 'компетентность', skill: 'навыки', language: 'языки', tool: 'инструменты', ability: 'заклинательная характеристика' };
@@ -1457,13 +1646,14 @@
   });
   let spellFilter = defaultSpellFilter();
   let lastComputed = null;
+  let activeCaster = 'main'; // which class's spells the tab edits when multiclassed
 
   const levelName = lvl => (lvl === 0 ? 'Заговоры' : `${lvl} уровень`);
 
   function spellMatches(x, sp) {
     const f = spellFilter;
     // Granted spells come with the subclass, whatever books are ticked.
-    const chosen = state.spells.includes(x.url) || sp.alwaysUrls.has(x.url);
+    const chosen = spellPicksOf(sp.entryKey).includes(x.url) || sp.alwaysUrls.has(x.url);
     if (!isAllowed(x) && !chosen) return false;
     if (x.level === 0 && !sp.cantripLimit && !chosen) return false; // class has no cantrips
     if (f.available && x.level > sp.maxLevel && !chosen) return false;
@@ -1507,7 +1697,7 @@
         <h3>Заклинания расы и черт <span class="muted">— всегда подготовлены, не учитываются в лимите</span></h3>
         ${sources.map(src => {
           const pick = state.extraSpells[src.key] || {};
-          const fixed = src.fixed.filter(f => f.spell).map(f => f.level <= state.level
+          const fixed = src.fixed.filter(f => f.spell).map(f => f.level <= charLevel()
             ? `<li>${spellLink(f.spell)} <span class="muted">${f.spell.level ? `${f.spell.level} ур.` : 'заговор'}</span></li>`
             : `<li class="muted">${esc(rus(f.spell))} — с ${f.level} уровня персонажа</li>`).join('');
           const list = src.listOptions ? `<label>Список заклинаний <select data-extra-list="${esc(src.key)}">
@@ -1532,11 +1722,15 @@
 
   function renderSpells(c) {
     lastComputed = c;
-    const sp = c.spell;
+    const sp = c.casters.find(x => x.entryKey === activeCaster) || c.casters[0] || null;
+    if (sp) activeCaster = sp.entryKey;
     renderExtraSpells(c);
     el.spellPanel.hidden = !sp && !c.extraSpells.length;
-    el.tabSpellCount.textContent = sp ? String(sp.cantrips.length + sp.leveled.length + sp.always.length)
-      : c.extraSpells.length ? String(c.extraSpells.length) : '';
+    const total = c.casters.reduce((n, x) => n + x.cantrips.length + x.leveled.length + x.always.length, 0);
+    el.tabSpellCount.textContent = total ? String(total) : c.extraSpells.length ? String(c.extraSpells.length) : '';
+    // Multiclassed casters: one button per class; the tab edits the selected one.
+    el.casterSwitch.innerHTML = c.casters.length > 1 ? c.casters.map(x =>
+      `<button type="button" data-caster="${esc(x.entryKey)}" aria-pressed="${x === sp}">${esc(x.label)}</button>`).join('') : '';
 
     if (!sp) {
       el.spellSummary.innerHTML = c.extraSpells.length ? `Заклинания расы и черт: <b>${c.extraSpells.length}</b>` : '';
@@ -1553,12 +1747,13 @@
       return;
     }
 
-    const summary = spellCountsHtml(sp);
-    el.spellSummary.innerHTML = summary;
-    el.spellCounts.innerHTML = summary;
+    el.spellSummary.innerHTML = c.casters.map(x => (c.casters.length > 1 ? `<b>${esc(x.label)}</b>: ` : '') + spellCountsHtml(x)).join('<br>');
+    el.spellCounts.innerHTML = spellCountsHtml(sp) + (sp.sharedSlots ? ` · ячейки мультикласса: уровень заклинателя <b>${sp.sharedSlots}</b>` : '');
+    const picks = spellPicksOf(sp.entryKey);
+    const listKey = `${sp.entryKey}|${sp.entry.spellsKey}`;
 
     // Everything the tab can show: the pickable pool plus granted spells outside the class list.
-    const pickable = spellPool();
+    const pickable = spellPool(sp.entry);
     const pickableUrls = new Set(pickable.map(x => x.url));
     const browse = [...pickable, ...sp.always.filter(x => !pickableUrls.has(x.url))];
     const alwaysFrom = new Map(sp.always.map(x => [x.url, x.alwaysFrom]));
@@ -1566,8 +1761,8 @@
     const grantedKey = [...sp.alwaysUrls].join(',') + '|' + pickable.filter(x => x.expanded).length;
 
     // Filter chips depend on the spell list (edition, class, books).
-    const pool = browse.filter(x => isAllowed(x) || state.spells.includes(x.url) || sp.alwaysUrls.has(x.url));
-    renderSection('spellChips', `${data.spellsKey}|${sourcesKey()}|${grantedKey}`, () => {
+    const pool = browse.filter(x => isAllowed(x) || picks.includes(x.url) || sp.alwaysUrls.has(x.url));
+    renderSection('spellChips', `${listKey}|${sourcesKey()}|${grantedKey}`, () => {
       const levels = [...new Set(pool.map(x => x.level))].sort((a, b) => a - b);
       const schools = [...new Set(pool.map(x => x.school).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ru'));
       el.filterLevels.innerHTML = levels.map(l => `<label><input type="checkbox" data-filter-level="${l}"${spellFilter.levels.has(l) ? ' checked' : ''}> ${l === 0 ? 'Заговор' : l}</label>`).join('');
@@ -1579,8 +1774,8 @@
 
     const f = spellFilter;
     const filterKey = JSON.stringify([f.search, [...f.levels], [...f.schools], f.conc, f.ritual, f.noV, f.noS, f.noM, f.available,
-      f.chosen ? state.spells : null]);
-    renderSection('spellRows', `${data.spellsKey}|${sp.maxLevel}|${sp.cantripLimit}|${sourcesKey()}|${grantedKey}|${filterKey}`, () => {
+      f.chosen ? picks : null]);
+    renderSection('spellRows', `${listKey}|${sp.maxLevel}|${sp.cantripLimit}|${sourcesKey()}|${grantedKey}|${filterKey}`, () => {
       const items = browse.filter(x => spellMatches(x, sp));
       const byLevel = new Map();
       for (const x of items) {
@@ -1621,7 +1816,7 @@
         return;
       }
       row.classList.remove('always');
-      box.checked = state.spells.includes(box.dataset.spell);
+      box.checked = picks.includes(box.dataset.spell);
       const full = level === 0 ? cantripsFull : preparedFull;
       const tooHigh = level > sp.maxLevel;
       box.disabled = !box.checked && (full || tooHigh);
@@ -1690,9 +1885,10 @@
     const { cls, subclass, eff, species, lineage, background } = data;
     const openKeys = new Set([...el.sheet.querySelectorAll('details[open][data-key]')].map(d => d.dataset.key));
 
-    const classLine = cls
-      ? `${esc(rus(cls))}${subclass ? ` (${esc(rus(subclass))})` : ''}, ${s.level} уровень`
-      : `Персонаж ${s.level} уровня`;
+    const classLine = !cls ? `Персонаж ${c.CL} уровня`
+      : c.multi
+        ? `${c.entries.map(e => `${esc(rus(e.cls))}${e.subclass ? ` (${esc(rus(e.subclass))})` : ''} ${e.level}`).join(' / ')} · уровень ${c.CL}`
+        : `${esc(rus(cls))}${subclass ? ` (${esc(rus(subclass))})` : ''}, ${s.level} уровень`;
     // 2014 subrace names already include the race ("Дварф (холмовой)").
     const speciesName = !species ? '—'
       : lineage ? (edition === '2014' ? esc(rus(lineage)) : `${esc(rus(species))} — ${esc(rus(lineage))}`)
@@ -1750,8 +1946,8 @@
         <summary><span>${esc(title)}</span>${tag ? `<span class="tag">${esc(tag)}</span>` : ''}${level ? `<span class="lvl">${level} ур.</span>` : ''}</summary>
         ${rich(desc)}
       </details>`;
-    const classFeatureHtml = c.classFeatures.map((f, i) => feature(`c-${f.key || i}-${f.level}`, f.name, f.level, f.description,
-      f.isSubclass ? 'подкласс' : f.optional ? 'опционально' : '')).join('')
+    const classFeatureHtml = c.classFeatures.map((f, i) => feature(`c-${f.entryKey}-${f.key || i}-${f.level}`, f.name, f.level, f.description,
+      [f.classTag, f.isSubclass ? 'подкласс' : f.optional ? 'опционально' : ''].filter(Boolean).join(' · '))).join('')
       // Picked options (invocations, metamagic, maneuvers, …). 2014 ones load their text on demand.
       + c.chosenOptions.map(({ choice, option }) => option.description?.length
         ? feature(`o-${choice.key}-${option.key}`, rus(option), choice.level, option.description, choice.title)
@@ -1776,15 +1972,21 @@
               <td><span class="tag always">${esc(x.sourceTag || '')}</span> ${esc(x.alwaysFrom || '')}</td></tr>`).join('')}</table>
         </section>`;
     }
-    if (c.spell) {
-      const sp = c.spell;
-      const slotHtml = sp.pact
+    // One section per casting class; shared multiclass slots are shown once, on the first.
+    let sharedShown = false;
+    for (const sp of c.casters) {
+      let slotHtml = sp.pact
         ? `<div class="slot"><b>${sp.pact.count}</b>ячейки ${sp.pact.level} ур.</div>`
         : sp.slotsRow.map((n, i) => `<div class="slot"><b>${n}</b>${i + 1} ур.</div>`).join('');
+      if (sp.sharedSlots) {
+        slotHtml = sharedShown ? '<p class="hint">Ячейки общие для классов (см. выше).</p>'
+          : `${slotHtml}<p class="hint">Общие ячейки мультикласса: уровень заклинателя ${sp.sharedSlots}.</p>`;
+        sharedShown = true;
+      }
       const rows = [...sp.cantrips, ...sp.leveled, ...sp.always].sort((a, b) => a.level - b.level || rus(a).localeCompare(rus(b), 'ru'));
-      spellHtml = `
+      spellHtml += `
         <section class="box">
-          <h3>Заклинания · ${esc(CASTER_NAMES[sp.type] || '')}</h3>
+          <h3>Заклинания${c.casters.length > 1 ? ` · ${esc(sp.label)}` : ''} · ${esc(CASTER_NAMES[sp.type] || '')}</h3>
           <div class="combat">
             <div class="stat"><b>${esc(ABILITY[sp.abilityKey]?.short || '—')}</b><span>Базовая характеристика</span></div>
             <div class="stat"><b>${sp.dc}</b><span>Сл спасброска</span></div>
@@ -1818,7 +2020,7 @@
           <div class="fact"><span>${esc(P.labels.species)}</span><b>${speciesName}</b></div>
           <div class="fact"><span>Предыстория</span><b>${background ? esc(rus(background)) : '—'}</b></div>
           <div class="fact"><span>Мировоззрение</span><b>${esc(s.alignment || '—')}</b></div>
-          <div class="fact"><span>Кость хитов</span><b>${c.hd ? `${s.level}${esc(c.hd.label)}` : '—'}</b></div>
+          <div class="fact"><span>Кость хитов</span><b>${c.hitDice.length ? c.hitDice.map(h => `${h.level}${esc(h.die.label)}`).join(' + ') : '—'}</b></div>
           <div class="fact"><span>Бонус мастерства</span><b>${signed(c.pb)}</b></div>
           <div class="fact"><span>Пасс. внимательность</span><b>${passive}</b></div>
         </div>
@@ -1828,7 +2030,7 @@
 
       <div class="combat">
         <div class="stat"><b>${c.ac}</b><span>Класс доспеха</span><small>${esc(c.acNote)}</small></div>
-        <div class="stat"><b>${c.hp || '—'}</b><span>Хиты</span><small>${c.hd ? `${c.hd.maxValue} + ${esc(c.hd.label)} за уровень` : ''}</small></div>
+        <div class="stat"><b>${c.hp || '—'}</b><span>Хиты</span><small>${c.multi ? 'по костям хитов классов' : c.hd ? `${c.hd.maxValue} + ${esc(c.hd.label)} за уровень` : ''}</small></div>
         <div class="stat"><b>${signed(c.init)}</b><span>Инициатива</span><small>${c.initPB ? 'с бонусом мастерства' : ''}</small></div>
         <div class="stat"><b>${c.speed}</b><span>Скорость, фт.</span><small>${esc([...c.speedNotes, ...movement.slice(1)].join(', '))}</small></div>
       </div>
@@ -1907,8 +2109,13 @@
     const name = el.sheet.querySelector('.charName');
     if (name) name.textContent = state.name || 'Безымянный герой';
   });
+  el.addClassBtn.addEventListener('click', () => {
+    if (state.multiclass.length >= 3 || charLevel() >= 20) return;
+    setAndUpdate({ multiclass: [...state.multiclass, { classUrl: '', subclassUrl: '', level: 1, spells: [] }] });
+  });
   el.level.addEventListener('change', () => {
-    state.level = clampInt(el.level.value, 1, 20, 1);
+    const others = state.multiclass.reduce((n, m) => n + (m.classUrl ? m.level : 0), 0);
+    state.level = clampInt(el.level.value, 1, Math.max(1, 20 - others), 1);
     el.level.value = state.level;
     update();
   });
@@ -1966,6 +2173,19 @@
     }
     const sub = find(data.subclasses, state.subclassUrl);
     if (state.subclassUrl && bad(sub)) { removed.push(rus(sub)); state.subclassUrl = ''; }
+    // Extra classes: the class, its subclass and its spells.
+    state.multiclass = state.multiclass.map((m, i) => {
+      const mcClass = find(lists.classes, m.classUrl);
+      if (bad(mcClass)) { removed.push(rus(mcClass)); return { ...m, classUrl: '', subclassUrl: '', spells: [] }; }
+      const entry = (data.entries || []).find(e => e.key === `mc${i}`);
+      let next = m;
+      const mcSub = entry && find(entry.subclasses, m.subclassUrl);
+      if (m.subclassUrl && bad(mcSub)) { removed.push(rus(mcSub)); next = { ...next, subclassUrl: '' }; }
+      const pool = entry ? spellPool(entry) : [];
+      const kept = m.spells.filter(url => !bad(find(pool, url)));
+      if (kept.length !== m.spells.length) { removed.push(`заклинания: ${m.spells.length - kept.length}`); next = { ...next, spells: kept }; }
+      return next;
+    });
 
     const species = find(lists.species, state.speciesUrl);
     if (bad(species)) { removed.push(rus(species)); Object.assign(state, { speciesUrl: '', lineageUrl: '' }); }
@@ -2027,9 +2247,10 @@
       return setAndUpdate({ extraSpells: { ...state.extraSpells, [key]: { ...entry, picks } } });
     }
     if (t.dataset.spell) {
-      const set = new Set(state.spells);
+      // Picks go to the class selected in the caster switch.
+      const set = new Set(spellPicksOf(activeCaster));
       t.checked ? set.add(t.dataset.spell) : set.delete(t.dataset.spell);
-      return setAndUpdate({ spells: [...set] });
+      return setSpellPicks(activeCaster, [...set]);
     }
     if (t.dataset.filterLevel != null) {
       const lvl = Number(t.dataset.filterLevel);
@@ -2086,6 +2307,18 @@
       const key = t.dataset.featOption;
       return setAndUpdate({ feats: { ...state.feats, [key]: { ...(state.feats[key] || {}), option: Number(t.value), picks: [] } } });
     }
+    if (t.dataset.mcField) {
+      const i = Number(t.dataset.mc);
+      const field = t.dataset.mcField;
+      const others = state.level + state.multiclass.reduce((n, m, j) => n + (j !== i && m.classUrl ? m.level : 0), 0);
+      const multiclass = state.multiclass.map((m, j) => {
+        if (j !== i) return m;
+        if (field === 'classUrl') return { ...m, classUrl: t.value, subclassUrl: '', spells: [] };
+        if (field === 'level') return { ...m, level: clampInt(t.value, 1, Math.max(1, 20 - others), 1) };
+        return { ...m, [field]: t.value };
+      });
+      return setAndUpdate({ multiclass });
+    }
     if (t.dataset.choice) {
       const list = [...(state.choices[t.dataset.choice] || [])];
       list[Number(t.dataset.index)] = t.value;
@@ -2120,8 +2353,13 @@
   });
 
   document.addEventListener('click', event => {
-    const t = event.target.closest('[data-action], [data-spell-info], [data-feat-info], [data-option-info]');
+    const t = event.target.closest('[data-action], [data-spell-info], [data-feat-info], [data-option-info], [data-mc-remove], [data-caster]');
     if (!t) return;
+    if (t.dataset.mcRemove != null) {
+      const i = Number(t.dataset.mcRemove);
+      return setAndUpdate({ multiclass: state.multiclass.filter((_, j) => j !== i) });
+    }
+    if (t.dataset.caster) { activeCaster = t.dataset.caster; rendered.spellRows = ''; rendered.spellChips = ''; return rerenderSpells(); }
     if (t.dataset.optionInfo) { event.preventDefault(); return showOption(t.dataset.optionInfo); }
     if (t.dataset.spellInfo) { event.preventDefault(); return showSpell(t.dataset.spellInfo); }
     if (t.dataset.featInfo) { event.preventDefault(); return showFeat(t.dataset.featInfo); }
@@ -2256,7 +2494,7 @@
     state = loadState(edition);
     Object.assign(data, {
       cls: null, subclasses: [], subclass: null, eff: null, species: null, lineages: [], lineage: null,
-      background: null, feats: {}, featLists: {}, spells: [], spellsKey: '', granted: [],
+      background: null, feats: {}, featLists: {}, entries: [], spells: [], spellsKey: '', granted: [],
       spellSources: [], spellCandidates: {},
     });
     Object.keys(rendered).forEach(k => delete rendered[k]);

@@ -75,6 +75,7 @@
           <h2>Заклинания класса</h2>
           <p id="spellCounts" class="hint"></p>
         </div>
+        <div id="casterSwitch" class="casterSwitch"></div>
         <div id="extraSpells"></div>
         <div id="spellBrowserBody"></div>
       </div>
@@ -91,7 +92,7 @@
           </div>
           <label>Имя персонажа <input id="nameInput" maxlength="60" placeholder="Безымянный герой"></label>
           <div class="row">
-            <label>Уровень <input id="levelInput" type="number" min="1" max="20" value="1"></label>
+            <label><span id="levelLabel">Уровень</span> <input id="levelInput" type="number" min="1" max="20" value="1"></label>
             <label>Мировоззрение
               <select id="alignmentSelect">
                 <option value="">—</option>
@@ -117,6 +118,8 @@
           <label id="subclassField" hidden><span id="subclassLabel">Подкласс</span> <select id="subclassSelect"></select></label>
           <p id="subclassHint" class="hint" hidden></p>
           <div id="classSkills"></div>
+          <div id="multiclassEditor"></div>
+          <button type="button" id="addClassBtn" class="smallBtn">+ Добавить класс (мультикласс)</button>
         </section>
 
         <section class="panel" id="choicesPanel" hidden>

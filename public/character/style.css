@@ -145,6 +145,13 @@ button:hover, .fileBtn:hover { border-color: var(--site-accent); color: var(--si
 .chips label:has(input:disabled) { opacity: .45; cursor: not-allowed; }
 .chips input { margin: 0; }
 
+.smallBtn { margin-top: 6px; padding: 5px 10px; font-size: 12px; }
+#multiclassEditor .choiceTitle { margin: 10px 0 6px; color: var(--site-accent); font-size: 12px; }
+.mcRow { margin-bottom: 8px; padding: 8px; border: 1px solid var(--site-line); border-radius: 6px; }
+.mcRow label { margin-bottom: 6px; }
+.casterSwitch { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.casterSwitch:empty { display: none; }
+.casterSwitch button[aria-pressed="true"] { border-color: var(--site-accent); color: var(--site-accent-strong); background: rgba(112, 225, 195, .12); }
 .choiceBlock { padding: 8px 0; border-top: 1px dashed var(--site-line); }
 .choiceBlock:first-child { border-top: 0; padding-top: 0; }
 .choiceBlock .choiceTitle .muted { font-size: 11px; }

@@ -263,8 +263,44 @@ function createDndProxy({ cacheDir }) {
   return createCachedProxy({ cacheDir, resolve: resolveCore });
 }
 
+// Legacy spell lists carry no ritual/concentration flags, only the spell pages do. Build a
+// compact { slug: { r, c } } index from the spell pages we already hold (seed, then the live
+// cache, which may be newer).
+async function buildSpellFlags(dirs) {
+  const flags = {};
+  for (const dir of dirs) {
+    let files = [];
+    try { files = await fs.promises.readdir(dir); } catch { continue; }
+    for (const file of files) {
+      if (!file.endsWith('.json')) continue;
+      try {
+        const entry = JSON.parse(await fs.promises.readFile(path.join(dir, file), 'utf8'));
+        if (!/^spells\/[^?]+$/.test(entry.key || '')) continue;
+        const spell = JSON.parse(entry.body);
+        flags[entry.key.slice('spells/'.length)] = {
+          r: spell.ritual ? 1 : 0,
+          c: /концентрац/i.test(spell.duration || '') ? 1 : 0,
+        };
+      } catch { /* skip unreadable entries */ }
+    }
+  }
+  return flags;
+}
+
 function createDnd14Proxy({ cacheDir, seedDir = path.join(__dirname, 'seed', 'dnd14') }) {
-  return createCachedProxy({ cacheDir, resolve: resolveLegacy, seedDir });
+  const router = express.Router();
+  let flags = null;
+  let builtAt = 0;
+  router.get('/spell-flags', async (req, res) => {
+    if (!flags || Date.now() - builtAt > FRESH_MS) {
+      flags = await buildSpellFlags([seedDir, cacheDir]);
+      builtAt = Date.now();
+    }
+    res.set('Cache-Control', 'public, max-age=600');
+    res.json(flags);
+  });
+  router.use(createCachedProxy({ cacheDir, resolve: resolveLegacy, seedDir }));
+  return router;
 }
 
 module.exports = {

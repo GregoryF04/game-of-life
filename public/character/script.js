@@ -184,6 +184,13 @@
     },
   };
 
+  // 2014 list entries lack ritual/concentration; take them from the server's flag index.
+  function spellShort14(raw) {
+    const s = T14.normalizeSpellShort(raw);
+    const f = lists.spellFlags?.[s.url];
+    return f ? { ...s, ritual: Boolean(f.r), concentration: Boolean(f.c) } : s;
+  }
+
   // An edition provider hides each API's shape behind one interface.
   const PROVIDERS = {
     2024: {
@@ -290,10 +297,12 @@
       labels: { species: 'Раса', lineage: 'Подраса', noLineage: '— без подрасы —', speciesPlaceholder: '— выберите расу —' },
       rules: { bgAbilityBonus: false, raceAbilityBonus: true, originFeat: false, asiPseudoFeat: true },
       async loadLists() {
-        const [classes, races, backgrounds, feats] = await Promise.all([
+        const [classes, races, backgrounds, feats, spellFlags] = await Promise.all([
           api('classes'), api('races'), api('backgrounds'), api('traits').catch(() => []),
+          api('spell-flags').catch(() => ({})),
         ]);
         const out = {
+          spellFlags: spellFlags && typeof spellFlags === 'object' ? spellFlags : {},
           classes: sortByName(classes.map(T14.normalizeClassShort)),
           species: sortByName(races.map(T14.normalizeRaceShort)),
           backgrounds: sortByName(backgrounds.map(T14.normalizeBackgroundShort)),
@@ -330,7 +339,7 @@
         if (!eff || !isCasterType(eff.casterType) || !eff.spellListClassId) return '';
         return `spells?class=${eff.spellListClassId}`;
       },
-      loadSpells: async key => sortByName((await api(key)).map(T14.normalizeSpellShort)),
+      loadSpells: async key => sortByName((await api(key)).map(spellShort14)),
       async loadSpell(url) { return T14.normalizeSpell(await api(`spells/${url}`)); },
       // Subclass spell table: rows by class level, always prepared. The warlock table lists
       // spells by spell level and only widens the choice, so all rows apply.
@@ -373,7 +382,7 @@
         const ids = ref === 'any' ? Object.values(T14.CLASS_IDS) : [T14.CLASS_IDS[ref]].filter(Boolean);
         const lists14 = await Promise.all(ids.map(id => api(`spells?class=${id}`).catch(() => [])));
         const byUrl = new Map();
-        for (const s of lists14.flat().map(T14.normalizeSpellShort)) if (s.level === level && !byUrl.has(s.url)) byUrl.set(s.url, s);
+        for (const s of lists14.flat().map(spellShort14)) if (s.level === level && !byUrl.has(s.url)) byUrl.set(s.url, s);
         return sortByName([...byUrl.values()]);
       },
     },
@@ -953,7 +962,7 @@
     tabSpellCount: $('tabSpellCount'), spellBrowserBody: $('spellBrowserBody'), spellSearch: $('spellSearch'),
     extraSpells: $('extraSpells'),
     filterLevels: $('filterLevels'), filterSchools: $('filterSchools'), filterConcGroup: $('filterConcGroup'),
-    filterRitualRow: $('filterRitualRow'), filterRitual: $('filterRitual'), filterNoV: $('filterNoV'), filterNoS: $('filterNoS'),
+    filterRitualGroup: $('filterRitualGroup'), filterNoV: $('filterNoV'), filterNoS: $('filterNoS'),
     filterNoM: $('filterNoM'), filterChosen: $('filterChosen'), filterAvailable: $('filterAvailable'),
     armor: $('armorSelect'), shield: $('shieldInput'), equipment: $('equipmentChoices'),
     languages: $('languagesInput'), notes: $('notesInput'), sheet: $('sheet'),
@@ -1184,7 +1193,7 @@
   // ---------- spells tab ----------
 
   const defaultSpellFilter = () => ({
-    search: '', levels: new Set(), schools: new Set(), conc: 'any', ritual: false,
+    search: '', levels: new Set(), schools: new Set(), conc: 'any', ritual: 'any',
     noV: false, noS: false, noM: false, chosen: false, available: true,
   });
   let spellFilter = defaultSpellFilter();
@@ -1204,7 +1213,8 @@
     if (f.schools.size && !f.schools.has(x.school)) return false;
     if (f.conc === 'yes' && !x.concentration) return false;
     if (f.conc === 'no' && x.concentration) return false;
-    if (f.ritual && !x.ritual) return false;
+    if (f.ritual === 'yes' && !x.ritual) return false;
+    if (f.ritual === 'no' && x.ritual) return false;
     const comp = x.components || {};
     if ((f.noV && comp.v) || (f.noS && comp.s) || (f.noM && comp.m)) return false;
     if (f.search) {
@@ -1305,7 +1315,7 @@
       el.filterSchools.innerHTML = schools.map(s => `<label><input type="checkbox" data-filter-school="${esc(s)}"${spellFilter.schools.has(s) ? ' checked' : ''}> ${esc(s)}</label>`).join('');
       // The 2014 list data has no concentration/ritual flags; hide filters it cannot answer.
       el.filterConcGroup.hidden = !pool.some(x => x.concentration);
-      el.filterRitualRow.hidden = !pool.some(x => x.ritual);
+      el.filterRitualGroup.hidden = !pool.some(x => x.ritual);
     });
 
     const f = spellFilter;
@@ -1365,7 +1375,7 @@
   function syncSpellFilterInputs() {
     el.spellSearch.value = spellFilter.search;
     document.querySelectorAll('input[name="filterConc"]').forEach(r => { r.checked = r.value === spellFilter.conc; });
-    el.filterRitual.checked = spellFilter.ritual;
+    document.querySelectorAll('input[name="filterRitual"]').forEach(r => { r.checked = r.value === spellFilter.ritual; });
     el.filterNoV.checked = spellFilter.noV;
     el.filterNoS.checked = spellFilter.noS;
     el.filterNoM.checked = spellFilter.noM;
@@ -1759,8 +1769,10 @@
       t.checked ? spellFilter.schools.add(t.dataset.filterSchool) : spellFilter.schools.delete(t.dataset.filterSchool);
     } else if (t.name === 'filterConc') {
       spellFilter.conc = t.value;
+    } else if (t.name === 'filterRitual') {
+      spellFilter.ritual = t.value;
     } else {
-      const flags = { filterRitual: 'ritual', filterNoV: 'noV', filterNoS: 'noS', filterNoM: 'noM', filterChosen: 'chosen', filterAvailable: 'available' };
+      const flags = { filterNoV: 'noV', filterNoS: 'noS', filterNoM: 'noM', filterChosen: 'chosen', filterAvailable: 'available' };
       if (!flags[t.id]) return;
       spellFilter[flags[t.id]] = t.checked;
     }
@@ -1939,7 +1951,7 @@
         return;
       }
     }
-    Object.assign(lists, { feats: [], sourceList: [] }, editionLists[edition]);
+    Object.assign(lists, { feats: [], sourceList: [], spellFlags: {} }, editionLists[edition]);
   }
 
   async function switchEdition(next, { skipUpdate = false } = {}) {

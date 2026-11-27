@@ -120,11 +120,11 @@ function resolveCore(subPath, query) {
 const LEGACY_UPSTREAM = (process.env.TTG_LEGACY_API_BASE || 'https://5e14.ttg.club/api/v1').replace(/\/+$/, '');
 // Legacy slugs look like "wizard", "fighter/eldritch_knight", "human/human_(variant)".
 const LEGACY_SLUG = "[a-z0-9][a-z0-9_()'’.-]{0,120}";
-const LEGACY_LISTS = new Set(['classes', 'races', 'backgrounds', 'traits']);
+const LEGACY_LISTS = new Set(['classes', 'races', 'backgrounds', 'traits', 'weapons', 'armors']);
 const LEGACY_DETAIL = [
   new RegExp(`^classes/${LEGACY_SLUG}(/${LEGACY_SLUG})?$`),
   new RegExp(`^races/${LEGACY_SLUG}(/${LEGACY_SLUG})?$`),
-  new RegExp(`^(backgrounds|traits|spells)/${LEGACY_SLUG}$`),
+  new RegExp(`^(backgrounds|traits|spells|options|weapons|armors)/${LEGACY_SLUG}$`),
 ];
 
 function resolveLegacy(subPath, query) {

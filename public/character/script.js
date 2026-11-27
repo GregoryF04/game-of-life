@@ -93,6 +93,7 @@
       manual: Object.fromEntries(ABILITIES.map(a => [a.key, 10])),
       bgMode: '2-1', bgPlus2: '', bgPlus1: '',
       raceBonus: {}, // 2014: free ability picks per race bonus entry, { [entryIndex]: [ABILITY, ...] }
+      choices: {}, // feature options, expertise, skills, tools, languages: { [choiceKey]: [value, ...] }
       extraSpells: {}, // racial/feat spell choices: { [sourceKey]: { list, picks: { [choiceKey]: [url, ...] } } }
       classSkills: [],
       feats: {},
@@ -114,6 +115,7 @@
     if (!s.feats || typeof s.feats !== 'object') s.feats = {};
     if (!s.raceBonus || typeof s.raceBonus !== 'object') s.raceBonus = {};
     if (!s.extraSpells || typeof s.extraSpells !== 'object') s.extraSpells = {};
+    if (!s.choices || typeof s.choices !== 'object') s.choices = {};
     // Older saves had a single officialOnly flag. Keep their behaviour: filter on → default
     // book set; filter off → all books ('*'), so nothing gets dropped from them on load.
     s.sources = Array.isArray(raw.sources) ? raw.sources.filter(x => typeof x === 'string')
@@ -222,14 +224,16 @@
       lineages: short => (short?.hasLineages ? api(`species/${short.url}/lineages`).catch(() => []) : []),
       loadLineage: async (url, lineages) => lineages.find(x => x.url === url) || null,
       loadBackground: url => api(`backgrounds/${url}`),
-      async featLists(needEpic) {
-        const [general, epic] = await Promise.all([
-          api('feats/search?category=GENERAL').catch(() => []),
-          needEpic ? api('feats/search?category=EPIC_BOON').catch(() => []) : [],
-        ]);
-        return { general: sortByName(general), epic: sortByName(epic) };
+      // { CATEGORY: [feat, …] } for the categories the feat slots need.
+      async featLists(categories) {
+        const out = {};
+        await Promise.all(categories.map(async cat => {
+          out[cat] = sortByName(await api(`feats/search?category=${cat}`).catch(() => []));
+        }));
+        return out;
       },
       loadFeat: url => api(`feats/${url}`),
+      loadOption: async () => null, // 2024 options carry their description inline
       spellListKey({ cls, subclass, eff }) {
         if (!eff || !isCasterType(eff.casterType)) return '';
         // Subclass-only casters (Eldritch Knight, Arcane Trickster) have their own spell list on TTG.
@@ -333,7 +337,9 @@
       lineages: async short => short?.subraces || [],
       async loadLineage(url) { return T14.normalizeRace(await api(`races/${url}`), url); },
       async loadBackground(url) { return T14.normalizeBackground(await api(`backgrounds/${url}`)); },
-      featLists: async () => ({ general: lists.feats || [], epic: [] }),
+      // The legacy API has no feat categories: every slot offers every feat.
+      featLists: async categories => Object.fromEntries(categories.map(cat => [cat, cat === 'GENERAL' ? lists.feats || [] : []])),
+      async loadOption(url) { return T14.normalizeOption(await api(`options/${url}`), url); },
       async loadFeat(url) { return T14.normalizeFeat(await api(`traits/${url}`), url); },
       spellListKey({ eff }) {
         if (!eff || !isCasterType(eff.casterType) || !eff.spellListClassId) return '';
@@ -393,7 +399,7 @@
   const data = {
     cls: null, subclasses: [], subclass: null, eff: null,
     species: null, lineages: [], lineage: null,
-    background: null, feats: {}, featLists: { general: [], epic: [] },
+    background: null, feats: {}, featLists: {},
     spells: [], spellsKey: '', granted: [], spellSources: [], spellCandidates: {},
   };
 
@@ -423,9 +429,9 @@
 
     const slots = featSlots();
     const featUrls = [...new Set(slots.map(slot => slotFeatUrl(slot)).filter(url => url && url !== ASI_FEAT.url))];
-    const needLists = slots.some(x => !x.fixed);
+    const categories = [...new Set(slots.filter(x => !x.fixed).flatMap(x => x.categories || []))];
     const [featLists, ...featDetails] = await Promise.all([
-      needLists ? P.featLists(slots.some(x => x.epic)) : { general: [], epic: [] },
+      categories.length ? P.featLists(categories) : {},
       ...featUrls.map(url => P.loadFeat(url).catch(() => null)),
     ]);
     data.featLists = featLists;
@@ -447,6 +453,14 @@
       .filter(x => x.feat && x.feat.url !== ASI_FEAT.url);
     const pb = 2 + Math.floor((state.level - 1) / 4);
     const sources = P.spellSources({ species: data.species, lineage: data.lineage, feats, pb, background: data.background });
+    // Picked feature options may grant spells (e.g. 2024 invocations).
+    for (const ch of collectChoices().filter(x => x.type === 'option')) {
+      for (const opt of pickedOptions(ch)) {
+        const fixed = (opt.grantedSpells || []).filter(g => g.spell?.url)
+          .map(g => ({ url: g.spell.url, spell: g.spell, level: g.requiredLevel || 1 }));
+        if (fixed.length) sources.push({ key: `opt:${ch.key}:${opt.key}`, title: rus(opt), tag: 'умение', fixed, choices: [], listOptions: null });
+      }
+    }
     await Promise.all(sources.flatMap(src => src.fixed.filter(f => !f.spell).map(async f => {
       f.spell = await P.loadSpell(f.url).catch(() => null);
     })));
@@ -642,11 +656,26 @@
 
   // ---------- rules ----------
 
+  const FEAT_CATEGORY_NAMES = {
+    GENERAL: 'Общие черты', EPIC_BOON: 'Эпические черты', ORIGIN: 'Черты происхождения', FIGHTING_STYLE: 'Боевые стили',
+  };
+  // Choices that pick a feat of some category: 2024 fighting styles, the human's Versatile.
+  const ASI_CHOICE_KEYS = new Set(['feat', 'epic-boon']);
+
   function featSlots() {
     const slots = [];
     // 2014: a race trait named «Черта» (variant human) grants a free feat at level 1.
     if (data.lineage?.grantsFeat || data.species?.grantsFeat) {
-      slots.push({ key: 'race', level: 1, title: `Черта расы (${rus(data.lineage || data.species)})` });
+      slots.push({ key: 'race', level: 1, title: `Черта расы (${rus(data.lineage || data.species)})`, categories: ['GENERAL'] });
+    }
+    // 2024 species features that grant a feat (human Versatile → origin feat).
+    for (const race of [data.species, data.lineage]) {
+      for (const f of race?.features || []) {
+        for (const ch of f.mechanics?.choices || []) {
+          if (ch.type !== 'FEAT') continue;
+          slots.push({ key: `sp:${race.url}:${ch.key}`, level: 1, title: `${rus(f)} (${rus(race)})`, categories: ch.featCategories?.length ? ch.featCategories : ['ORIGIN'] });
+        }
+      }
     }
     if (P.rules.originFeat && state.backgroundUrl) {
       const short = lists.backgrounds.find(b => b.url === state.backgroundUrl);
@@ -656,13 +685,25 @@
     const seen = new Set();
     for (const f of expandFeatures(data.eff?.features)) {
       if (f.level > state.level) continue;
+      // Class features that pick a feat of a category (2024 fighting style), not the ASI ones.
+      // (Scaling copies from expandFeatures carry no mechanics, so each choice appears once.)
+      for (const ch of f.mechanics?.choices || []) {
+        if (ch.type !== 'FEAT' || ASI_CHOICE_KEYS.has(ch.key)) continue;
+        const key = `cf:${f.key || f.name}:${ch.key}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        slots.push({ key, level: f.level, title: `${f.name} · ${f.level} ур.`, categories: ch.featCategories || ['GENERAL'] });
+      }
       const epic = /эпическ\S* черт/i.test(f.name || '');
       if (!f.abilityImprovement && !epic) continue;
       let key = `lvl${f.level}`;
       while (seen.has(key)) key += 'b';
       seen.add(key);
       // 2014: the slot is "ASI or a feat" and defaults to the ASI.
-      slots.push({ key, level: f.level, title: `${f.name} · ${f.level} ур.`, epic, asi: P.rules.asiPseudoFeat });
+      slots.push({
+        key, level: f.level, title: `${f.name} · ${f.level} ур.`, epic, asi: P.rules.asiPseudoFeat,
+        categories: epic ? ['EPIC_BOON', 'GENERAL'] : ['GENERAL'],
+      });
     }
     return slots;
   }
@@ -671,6 +712,85 @@
     const picked = state.feats[slot.key];
     if (picked && typeof picked.url === 'string' && (picked.url || !slot.asi)) return picked.url;
     return slot.asi ? ASI_FEAT.url : '';
+  }
+
+  // ---------- choices: feature options, expertise, skills, tools, languages, casting ability ----------
+
+  // Count for a choice at the current level: the last scaling step reached, else its count.
+  function scaledCount(choice, level) {
+    if (!choice) return 0;
+    const steps = (choice.scaling || []).filter(s => s.level <= level);
+    if (choice.scaling?.length) return steps.length ? steps[steps.length - 1].count : 0;
+    return choice.count || 1;
+  }
+
+  // Every choice the character currently has, from class features, race/subrace and feats.
+  // key is stable across renders and is where the picks live (state.choices[key]).
+  function collectChoices() {
+    const L = state.level;
+    const out = [];
+    const fromMechanics = (prefix, title, mechanics, level) => {
+      for (const ch of mechanics?.choices || []) {
+        if (ch.requiredLevel && ch.requiredLevel > L) continue;
+        const count = scaledCount(ch, L);
+        if (!count) continue;
+        const key = `${prefix}:${ch.key}`;
+        const base = { key, title, label: ch.label || title, count, level };
+        if (ch.type === 'SKILL') {
+          out.push({
+            ...base, type: ch.grants === 'EXPERTISE' ? 'expertise' : 'skill',
+            options: (ch.options || []).map(o => o.value).filter(Boolean), onlyIfNotProficient: Boolean(ch.onlyIfNotProficient),
+          });
+        } else if (ch.type === 'LANGUAGE') {
+          out.push({ ...base, type: 'language' });
+        } else if (ch.type === 'TOOL') {
+          out.push({ ...base, type: 'tool', options: (ch.options || []).map(o => ({ value: o.value, label: o.name || o.value })) });
+        } else if (ch.type === 'SPELLCASTING_ABILITY') {
+          out.push({ ...base, type: 'ability', options: (ch.options || []).map(o => o.value).filter(v => ABILITY[v]) });
+        }
+        // FEAT → feat slots; CANTRIP/SPELL → spells; WEAPON_MASTERY → attacks section.
+      }
+    };
+    for (const f of data.eff?.features || []) {
+      if (f.level > L || (data.subclass && f.hideInSubclasses)) continue;
+      if (f.options?.length && f.optionsChoice) {
+        const count = scaledCount(f.optionsChoice, L);
+        if (count) {
+          out.push({
+            key: `opt:${f.key || f.name}`, type: 'option', title: f.name,
+            label: f.optionsChoice.label || f.optionsName || f.name, count, level: f.level, options: f.options,
+          });
+        }
+      }
+      fromMechanics(`cls:${f.key || f.name}`, f.name, f.mechanics, f.level);
+    }
+    for (const race of [data.species, data.lineage]) {
+      if (!race) continue;
+      fromMechanics(`race:${race.url}`, rus(race), race.mechanics, 1);
+      for (const f of race.features || []) fromMechanics(`race:${race.url}:${rus(f)}`, `${rus(f)} (${rus(race)})`, f.mechanics, f.level || 1);
+    }
+    for (const slot of featSlots()) {
+      const feat = data.feats[slotFeatUrl(slot)];
+      if (feat && feat.url !== ASI_FEAT.url) fromMechanics(`feat:${slot.key}`, rus(feat), feat.mechanics, slot.level);
+    }
+    return out;
+  }
+
+  // The player's picks for a choice, deduplicated and capped at its count.
+  function choicePicks(choice, valid = () => true) {
+    const picks = [];
+    for (const v of state.choices[choice.key] || []) {
+      if (v && !picks.includes(v) && valid(v) && picks.length < choice.count) picks.push(v);
+    }
+    return picks;
+  }
+
+  // Options picked for an option-type choice (invocations, metamagic, maneuvers, …).
+  // Options below their required class level are ignored until the character gets there.
+  function pickedOptions(choice) {
+    const allowed = o => o && !(o.requiredClassLevel && o.requiredClassLevel > state.level);
+    return choicePicks(choice, v => allowed(choice.options.find(o => o.key === v)))
+      .map(v => choice.options.find(o => o.key === v));
   }
 
   // 2014 race ability bonuses: cumulative entries; an entry with more candidates than its
@@ -813,6 +933,16 @@
       feats.push({ slot, feat });
       addMech(feat.mechanics, slot.level, rus(feat));
     }
+    // Feature options the player picked (invocations, metamagic, maneuvers, …) can carry
+    // mechanics too (e.g. Devil's Sight → darkvision).
+    const choices = collectChoices();
+    const chosenOptions = [];
+    for (const ch of choices.filter(x => x.type === 'option')) {
+      for (const option of pickedOptions(ch)) {
+        chosenOptions.push({ choice: ch, option });
+        addMech(option.mechanics, ch.level, rus(option));
+      }
+    }
     const props = { ...(species?.properties || {}), ...(lineage?.properties || {}) };
     if (props.darkVision > 0) mech.senses.DARKVISION = Math.max(mech.senses.DARKVISION || 0, props.darkVision);
 
@@ -826,6 +956,20 @@
       .filter(x => skillData?.skills?.includes(x) && !bgSkills.includes(x))
       .slice(0, skillData?.count || 0);
     const skills = new Set([...bgSkills, ...classSkills, ...mech.skills]);
+    const skillValues = new Set(lists.skills.map(x => x.value));
+    for (const ch of choices.filter(x => x.type === 'skill')) {
+      choicePicks(ch, v => skillValues.has(v) && (!ch.options.length || ch.options.includes(v))).forEach(v => skills.add(v));
+    }
+    // Expertise only applies to skills the character is proficient in.
+    const expertise = new Set();
+    for (const ch of choices.filter(x => x.type === 'expertise')) choicePicks(ch, v => skills.has(v)).forEach(v => expertise.add(v));
+    const chosenLanguages = choices.filter(x => x.type === 'language')
+      .flatMap(ch => choicePicks(ch, v => Boolean(lists.languages?.[v]))).map(v => lists.languages[v]);
+    const chosenTools = choices.filter(x => x.type === 'tool')
+      .flatMap(ch => choicePicks(ch, v => ch.options.some(o => o.value === v)).map(v => ch.options.find(o => o.value === v).label));
+    // Bard's Jack of All Trades: half proficiency on checks without proficiency (incl. initiative).
+    const jackOfAllTrades = classFeatures.some(f => /мастер на все руки/i.test(f.name || ''));
+    const halfPb = jackOfAllTrades ? Math.floor(pb / 2) : 0;
 
     // Hit points
     const hd = eff?.hitDice || cls?.hitDice;
@@ -852,6 +996,20 @@
       ac = armor.base + Math.min(mods.DEXTERITY, armor.maxDex);
     }
     if (s.shield) { ac += 2; acNote += ' + щит'; }
+    // Fighting style «Защита» (2014 option "defense", 2024 feat "defense-phb"): +1 AC in armor.
+    const defenseStyle = chosenOptions.find(x => x.option.key === 'defense')?.option
+      || feats.find(x => /^defense(-|$)/.test(x.feat.url || ''))?.feat;
+    if (defenseStyle && armor.id !== 'none') { ac += 1; acNote += ` + стиль «${rus(defenseStyle)}»`; }
+
+    // Speed bonuses: monk Unarmored Movement (from the class table), barbarian Fast Movement.
+    let speedBonus = 0;
+    const speedNotes = [];
+    const unarmoredCol = (eff?.table || []).find(col => /(скорость|движение) без доспехов/i.test(col.name || ''));
+    const unarmoredValue = unarmoredCol ? parseInt(String(scalingValue(unarmoredCol, L) || '').replace(/[^\d]/g, ''), 10) : 0;
+    if (unarmoredValue && armor.id === 'none' && !s.shield) { speedBonus += unarmoredValue; speedNotes.push(`+${unarmoredValue} без доспехов`); }
+    if (classFeatures.some(f => /быстрое передвижение/i.test(f.name || '')) && armor.cat !== 'HEAVY') {
+      speedBonus += 10; speedNotes.push('+10 быстрое передвижение');
+    }
     const warnings = [];
     if (armor.cat && cls && !armorCats.includes(armor.cat)) warnings.push(`Нет владения доспехами: ${ARMOR_CAT_NAMES[armor.cat]}`);
     if (s.shield && cls && !armorCats.includes('SHIELD')) warnings.push('Нет владения щитами');
@@ -907,6 +1065,7 @@
     const resources = [];
     for (const col of eff?.table || []) {
       if (['CANTRIPS_KNOWN', 'PREPARED_SPELLS', 'SPELLS_KNOWN', 'PACT_SLOTS', 'PACT_LEVEL'].includes(col.purpose)) continue;
+      if (/(скорость|движение) без доспехов/i.test(col.name || '')) continue; // applied to speed
       const v = scalingValue(col, L);
       if (v != null && v !== '' && v !== '—' && v !== '-') resources.push({ name: col.name, value: v });
     }
@@ -922,15 +1081,67 @@
       resources.push({ name: c.name, value: evalCounter(max, { pb, L, mods }), recovery: c.recovery });
     }
 
+    // Feat prerequisites, checked against the finished character.
+    const raceName = `${rus(species)} ${rus(lineage)}`.toLowerCase();
+    const featIssues = {};
+    for (const { slot, feat } of feats) {
+      const issues = prerequisiteIssues(feat, { scores, L, isCaster: Boolean(spell) || extraSpells.length > 0, armorCats, raceName });
+      if (issues.length) {
+        featIssues[slot.key] = issues;
+        warnings.push(`Черта «${rus(feat)}»: не выполнено — ${issues.join(', ')}`);
+      }
+    }
+
     return {
       L, pb, base, scores, mods, sources, bgAbils, slots, feats,
       saves, skills, bgSkills, classSkills, skillData,
+      expertise, halfPb, jackOfAllTrades, choices, chosenOptions, chosenLanguages, chosenTools, featIssues,
       hp, hd, ac, acNote, warnings,
-      init: mods.DEXTERITY + (mech.initPB ? pb : 0) + mech.initBonus, initPB: mech.initPB,
+      init: mods.DEXTERITY + (mech.initPB ? pb : halfPb) + mech.initBonus, initPB: mech.initPB,
       racePlan, extraSpells,
-      speed: props.movement?.base || 30, movement: props.movement || {}, size: props.size, creatureType: props.type,
+      speed: (props.movement?.base || 30) + speedBonus, speedNotes, movement: props.movement || {}, size: props.size, creatureType: props.type,
       mech, classFeatures, speciesFeatures, spell, resources,
     };
+  }
+
+  const ABILITY_STEMS = [
+    ['сил', 'STRENGTH'], ['ловк', 'DEXTERITY'], ['телосл', 'CONSTITUTION'],
+    ['интел', 'INTELLIGENCE'], ['мудр', 'WISDOM'], ['харизм', 'CHARISMA'],
+  ];
+  const RACE_WORDS = ['полуэльф', 'полуорк', 'полурослик', 'эльф', 'дварф', 'гном', 'драконорожд', 'тифлинг', 'человек'];
+
+  // Unmet prerequisites of a feat, as short human-readable reasons.
+  // 2024 feats have structured prerequisiteDetails; 2014 ones only text, parsed loosely.
+  function prerequisiteIssues(feat, { scores, L, isCaster, armorCats, raceName }) {
+    const issues = [];
+    const d = feat.prerequisiteDetails;
+    if (d) {
+      if (d.minCharacterLevel && L < d.minCharacterLevel) issues.push(`уровень ${d.minCharacterLevel}+`);
+      for (const req of d.abilities || []) {
+        const any = req.anyOf || [];
+        if (any.length && !any.some(k => (scores[k] || 0) >= req.minValue)) {
+          issues.push(`${any.map(k => ABILITY[k]?.name || k).join(' или ')} ${req.minValue}+`);
+        }
+      }
+      if ((d.classFeatures || []).some(x => /SPELLCASTING|PACT_MAGIC/.test(x)) && !isCaster) issues.push('умение накладывать заклинания');
+      return issues;
+    }
+    const text = String(feat.prerequisite || '').toLowerCase();
+    if (!text) return issues;
+    const num = /(\d{2})/.exec(text);
+    const abilities = ABILITY_STEMS.filter(([stem]) => text.includes(stem)).map(([, key]) => key);
+    if (num && abilities.length) {
+      const min = Number(num[1]);
+      const ok = /\sили\s/.test(text) ? abilities.some(k => scores[k] >= min) : abilities.every(k => scores[k] >= min);
+      if (!ok) issues.push(`${abilities.map(k => ABILITY[k].name).join(/\sили\s/.test(text) ? ' или ' : ' и ')} ${min}+`);
+    }
+    if (/заклинани/.test(text) && !isCaster) issues.push('умение накладывать заклинания');
+    const armorReq = [['лёгк', 'LIGHT'], ['легк', 'LIGHT'], ['средн', 'MEDIUM'], ['тяжёл', 'HEAVY'], ['тяжел', 'HEAVY']]
+      .find(([stem]) => new RegExp(`владени\\S*\\s+${stem}`).test(text));
+    if (armorReq && !armorCats.includes(armorReq[1])) issues.push('владение доспехами');
+    const race = RACE_WORDS.find(w => text.includes(w));
+    if (race && !raceName.includes(race)) issues.push(`раса: ${race}`);
+    return issues;
   }
 
   function evalCounter(expr, { pb, L, mods }) {
@@ -960,7 +1171,7 @@
     spellPanel: $('spellPanel'), spellSummary: $('spellSummary'), spellCounts: $('spellCounts'),
     spellsTab: $('spellsTab'), builderTab: $('builderTab'), tabBtnSpells: $('tabBtnSpells'), tabBtnBuilder: $('tabBtnBuilder'),
     tabSpellCount: $('tabSpellCount'), spellBrowserBody: $('spellBrowserBody'), spellSearch: $('spellSearch'),
-    extraSpells: $('extraSpells'),
+    extraSpells: $('extraSpells'), choicesPanel: $('choicesPanel'), choicesBody: $('choicesBody'),
     filterLevels: $('filterLevels'), filterSchools: $('filterSchools'), filterConcGroup: $('filterConcGroup'),
     filterRitualGroup: $('filterRitualGroup'), filterNoV: $('filterNoV'), filterNoS: $('filterNoS'),
     filterNoM: $('filterNoM'), filterChosen: $('filterChosen'), filterAvailable: $('filterAvailable'),
@@ -1144,12 +1355,58 @@
     el.abilityHint.innerHTML = hint;
 
     renderFeatSlots(c);
+    renderChoices(c);
     renderSpells(c);
     renderEquipmentChoices();
   }
 
+  const CHOICE_TYPE_HINTS = { expertise: 'компетентность', skill: 'навыки', language: 'языки', tool: 'инструменты', ability: 'заклинательная характеристика' };
+
+  function renderChoices(c) {
+    el.choicesPanel.hidden = !c.choices.length;
+    const signature = JSON.stringify([c.choices.map(ch => [ch.key, ch.type, ch.count, (ch.options || []).length]),
+      state.choices, [...c.skills], state.level, Object.keys(lists.languages || {}).length]);
+    renderSection('choices', signature, () => {
+      el.choicesBody.innerHTML = c.choices.map(ch => {
+        const picks = state.choices[ch.key] || [];
+        const head = `<div class="choiceTitle">${esc(ch.title)}${ch.label && ch.label !== ch.title ? ` — ${esc(ch.label)}` : ''}
+          <span class="muted">(${ch.type === 'option' ? 'выбрано' : CHOICE_TYPE_HINTS[ch.type] + ':'} ${picks.filter(Boolean).length > ch.count ? ch.count : picks.filter(Boolean).length} из ${ch.count})</span></div>`;
+        const selects = (options, info) => `<div class="bonusPicks">${Array.from({ length: ch.count }, (_, i) => `<div class="pickRow">
+          <select data-choice="${esc(ch.key)}" data-index="${i}"><option value="">— выберите —</option>${options.map(o =>
+            `<option value="${esc(o.value)}"${picks[i] === o.value ? ' selected' : ''}${o.disabled && picks[i] !== o.value ? ' disabled' : ''}>${esc(o.label)}</option>`).join('')}</select>
+          ${info && picks[i] ? `<button type="button" class="linkish" data-option-info="${esc(ch.key)}|${esc(picks[i])}">?</button>` : ''}</div>`).join('')}</div>`;
+        let body = '';
+        if (ch.type === 'option') {
+          body = selects(ch.options.map(o => ({
+            value: o.key,
+            label: `${rus(o)}${o.requiredClassLevel && o.requiredClassLevel > state.level ? ` (с ${o.requiredClassLevel} ур.)` : ''}${o.prerequisite?.length && !o.requiredClassLevel ? ` — ${o.prerequisite.join('; ')}` : ''}`,
+            disabled: o.requiredClassLevel && o.requiredClassLevel > state.level,
+          })), true);
+        } else if (ch.type === 'expertise' || ch.type === 'skill') {
+          const pool = ch.type === 'expertise' ? lists.skills.filter(sk => c.skills.has(sk.value))
+            : lists.skills.filter(sk => !ch.options.length || ch.options.includes(sk.value));
+          const chosen = choicePicks(ch);
+          body = `<div class="chips">${pool.map(sk => {
+            const on = chosen.includes(sk.value);
+            const already = ch.type === 'skill' && !on && c.skills.has(sk.value);
+            const full = !on && chosen.length >= ch.count;
+            return `<label${already ? ' title="Уже есть владение"' : ''}><input type="checkbox" data-choice-check="${esc(ch.key)}" value="${esc(sk.value)}"${on || already ? ' checked' : ''}${already || full ? ' disabled' : ''}> ${esc(sk.label)}</label>`;
+          }).join('') || '<span class="hint">Нет подходящих навыков.</span>'}</div>`;
+        } else if (ch.type === 'language') {
+          body = selects(Object.entries(lists.languages || {}).map(([value, label]) => ({ value, label })), false);
+        } else if (ch.type === 'tool') {
+          body = selects(ch.options.map(o => ({ value: o.value, label: o.label })), false);
+        } else if (ch.type === 'ability') {
+          body = selects(ch.options.map(k => ({ value: k, label: ABILITY[k].name })), false);
+        }
+        return `<div class="choiceGroup choiceBlock">${head}${body}</div>`;
+      }).join('');
+    });
+  }
+
   function renderFeatSlots(c) {
-    const signature = JSON.stringify([c.slots.map(sl => [sl.key, slotFeatUrl(sl)]), state.feats, data.featLists.general.length, data.featLists.epic.length, Object.keys(data.feats).length, sourcesKey()]);
+    const signature = JSON.stringify([c.slots.map(sl => [sl.key, slotFeatUrl(sl)]), state.feats,
+      Object.entries(data.featLists).map(([k, v]) => [k, v.length]), Object.keys(data.feats).length, sourcesKey(), c.featIssues]);
     renderSection('feats', signature, () => {
       if (!c.slots.length) {
         el.featSlots.innerHTML = P.rules.originFeat
@@ -1164,8 +1421,8 @@
         if (slot.fixed) {
           picker = `<div>${feat ? `<button type="button" class="linkish" data-feat-info="${esc(url)}">${esc(rus(feat))}</button>` : esc(url)}</div>`;
         } else {
-          const groups = slot.epic ? [['Эпические черты', data.featLists.epic], ['Общие черты', data.featLists.general]]
-            : [[P.rules.originFeat ? 'Общие черты' : 'Черты', data.featLists.general]];
+          const groups = (slot.categories || ['GENERAL']).map(cat => [
+            P.rules.originFeat ? FEAT_CATEGORY_NAMES[cat] || cat : 'Черты', data.featLists[cat] || []]);
           const asiOption = slot.asi
             ? `<option value="${ASI_FEAT.url}"${url === ASI_FEAT.url ? ' selected' : ''}>Увеличение характеристик (+2 или +1/+1)</option>` : '';
           picker = `<select data-feat-slot="${slot.key}"><option value="">— выберите черту —</option>${asiOption}${groups.map(([label, items]) =>
@@ -1184,7 +1441,9 @@
               `<option value="${k}"${plan.chosen[i] === k ? ' selected' : ''}>${ABILITY[k]?.name}</option>`).join('')}</select>`).join('');
           bonus = `<div class="bonusPicks">${opts}${picks}</div>`;
         }
-        const prereq = feat?.prerequisite ? `<div class="hint">Требование: ${esc(feat.prerequisite)}</div>` : '';
+        const issues = c.featIssues[slot.key] || [];
+        const prereq = feat?.prerequisite
+          ? `<div class="hint${issues.length ? ' warn' : ''}">Требование: ${esc(feat.prerequisite)}${issues.length ? ` — не выполнено: ${esc(issues.join(', '))}` : ''}</div>` : '';
         return `<div class="featSlot"><div class="slotTitle">${esc(slot.title)}</div>${picker}${prereq}${bonus}</div>`;
       }).join('');
     });
@@ -1451,10 +1710,13 @@
       return `<li><span class="pip${prof ? ' on' : ''}"></span><span class="val">${signed(c.mods[a.key] + (prof ? c.pb : 0))}</span> ${a.name}</li>`;
     }).join('');
 
-    const skillValue = skill => c.mods[skill.ability] + (c.skills.has(skill.value) ? c.pb : 0);
+    // Proficient: +PB; expertise: +2×PB; Jack of All Trades: +½PB on the rest.
+    const skillValue = skill => c.mods[skill.ability]
+      + (c.expertise.has(skill.value) ? 2 * c.pb : c.skills.has(skill.value) ? c.pb : c.halfPb);
     const skillRows = lists.skills.map(skill => {
       const prof = c.skills.has(skill.value);
-      return `<li><span class="pip${prof ? ' on' : ''}"></span><span class="val">${signed(skillValue(skill))}</span> ${esc(skill.label)}<span class="abil">${ABILITY[skill.ability]?.short || ''}</span></li>`;
+      const exp = c.expertise.has(skill.value);
+      return `<li${exp ? ' title="Компетентность"' : ''}><span class="pip${prof ? ' on' : ''}${exp ? ' exp' : ''}"></span><span class="val">${signed(skillValue(skill))}</span> ${esc(skill.label)}<span class="abil">${ABILITY[skill.ability]?.short || ''}</span></li>`;
     }).join('');
     const perception = lists.skills.find(x => x.value === 'PERCEPTION');
     const passive = 10 + (perception ? skillValue(perception) : c.mods.WISDOM) + c.mech.passiveBonus;
@@ -1465,6 +1727,8 @@
       return item?.name || t.url;
     })].filter(Boolean).map(esc);
     for (const markup of background?.toolMarkup || []) tools.push(inline(markup)); // 2014 text
+    c.chosenTools.forEach(t => tools.push(esc(t)));
+    const languages = [s.languages, ...c.chosenLanguages].filter(Boolean).join(', ');
 
     const senses = Object.entries(c.mech.senses).map(([k, v]) => `${SENSE_NAMES[k] || k} ${v} фт.`);
     const movement = [`${c.speed} фт.`];
@@ -1487,7 +1751,12 @@
         ${rich(desc)}
       </details>`;
     const classFeatureHtml = c.classFeatures.map((f, i) => feature(`c-${f.key || i}-${f.level}`, f.name, f.level, f.description,
-      f.isSubclass ? 'подкласс' : f.optional ? 'опционально' : '')).join('');
+      f.isSubclass ? 'подкласс' : f.optional ? 'опционально' : '')).join('')
+      // Picked options (invocations, metamagic, maneuvers, …). 2014 ones load their text on demand.
+      + c.chosenOptions.map(({ choice, option }) => option.description?.length
+        ? feature(`o-${choice.key}-${option.key}`, rus(option), choice.level, option.description, choice.title)
+        : `<div class="feature optionRow"><span>${esc(rus(option))}</span> <span class="tag">${esc(choice.title)}</span>
+            <button type="button" class="linkish" data-option-info="${esc(choice.key)}|${esc(option.key)}">описание</button></div>`).join('');
     const speciesFeatureHtml = c.speciesFeatures.map((f, i) => feature(`s-${i}-${rus(f)}`, rus(f), null, f.description)).join('');
     const bgFeatureHtml = background?.featureName
       ? feature(`b-${background.url}`, background.featureName, null, background.featureDescription, 'предыстория') : '';
@@ -1561,7 +1830,7 @@
         <div class="stat"><b>${c.ac}</b><span>Класс доспеха</span><small>${esc(c.acNote)}</small></div>
         <div class="stat"><b>${c.hp || '—'}</b><span>Хиты</span><small>${c.hd ? `${c.hd.maxValue} + ${esc(c.hd.label)} за уровень` : ''}</small></div>
         <div class="stat"><b>${signed(c.init)}</b><span>Инициатива</span><small>${c.initPB ? 'с бонусом мастерства' : ''}</small></div>
-        <div class="stat"><b>${c.speed}</b><span>Скорость, фт.</span><small>${esc(movement.slice(1).join(', '))}</small></div>
+        <div class="stat"><b>${c.speed}</b><span>Скорость, фт.</span><small>${esc([...c.speedNotes, ...movement.slice(1)].join(', '))}</small></div>
       </div>
       ${c.warnings.length ? `<p class="hint warn">${c.warnings.map(esc).join('. ')}</p>` : ''}
 
@@ -1574,7 +1843,7 @@
               <dt>Доспехи</dt><dd>${esc(prof.armor || '—')}</dd>
               <dt>Оружие</dt><dd>${esc(prof.weapon || '—')}</dd>
               <dt>Инструменты</dt><dd>${tools.join(', ') || '—'}</dd>
-              <dt>Языки</dt><dd>${esc(s.languages || '—')}</dd>
+              <dt>Языки</dt><dd>${esc(languages || '—')}</dd>
             </dl>
           </section>
         </div>
@@ -1711,7 +1980,7 @@
       Object.assign(state, { backgroundUrl: '', bgPlus2: '', bgPlus1: '', bgEquip: 0, feats });
     }
 
-    const featPool = [...data.featLists.general, ...data.featLists.epic];
+    const featPool = Object.values(data.featLists).flat();
     for (const [key, entry] of Object.entries(state.feats)) {
       if (key === 'origin' || entry?.url === ASI_FEAT.url) continue; // fixed by background / not a book feat
       const feat = find(featPool, entry?.url) || data.feats[entry?.url];
@@ -1817,6 +2086,17 @@
       const key = t.dataset.featOption;
       return setAndUpdate({ feats: { ...state.feats, [key]: { ...(state.feats[key] || {}), option: Number(t.value), picks: [] } } });
     }
+    if (t.dataset.choice) {
+      const list = [...(state.choices[t.dataset.choice] || [])];
+      list[Number(t.dataset.index)] = t.value;
+      return setAndUpdate({ choices: { ...state.choices, [t.dataset.choice]: list } });
+    }
+    if (t.dataset.choiceCheck) {
+      const key = t.dataset.choiceCheck;
+      const set = new Set((state.choices[key] || []).filter(Boolean));
+      t.checked ? set.add(t.value) : set.delete(t.value);
+      return setAndUpdate({ choices: { ...state.choices, [key]: [...set] } });
+    }
     if (t.dataset.racePick) {
       const index = t.dataset.racePick;
       const picks = [...(state.raceBonus[index] || [])];
@@ -1840,8 +2120,9 @@
   });
 
   document.addEventListener('click', event => {
-    const t = event.target.closest('[data-action], [data-spell-info], [data-feat-info]');
+    const t = event.target.closest('[data-action], [data-spell-info], [data-feat-info], [data-option-info]');
     if (!t) return;
+    if (t.dataset.optionInfo) { event.preventDefault(); return showOption(t.dataset.optionInfo); }
     if (t.dataset.spellInfo) { event.preventDefault(); return showSpell(t.dataset.spellInfo); }
     if (t.dataset.featInfo) { event.preventDefault(); return showFeat(t.dataset.featInfo); }
     if (t.dataset.action === 'roll') {
@@ -1890,6 +2171,18 @@
         </dl><br>${rich(sp.description)}${sp.upper?.length ? `<h3>На более высоких уровнях</h3>${rich(sp.upper)}` : ''}`;
     });
   }
+  // "choiceKey|optionKey": 2024 options carry their text; 2014 ones are fetched on demand.
+  function showOption(ref) {
+    const [choiceKey, optionKey] = ref.split('|');
+    const choice = (lastComputed?.choices || []).find(ch => ch.key === choiceKey);
+    const option = choice?.options?.find(o => o.key === optionKey);
+    if (!option) return;
+    showDetail(async () => (option.description?.length ? option : (await P.loadOption(option.url || option.key)) || option), o => `
+      <h2>${esc(rus(o))}</h2>
+      <p class="hint">${esc(choice.title)}${o.prerequisite?.length ? ` · Требование: ${esc(o.prerequisite.join('; '))}` : ''}</p>
+      ${o.description?.length ? rich(o.description) : '<p class="muted">Описание недоступно.</p>'}`);
+  }
+
   function showFeat(url) {
     showDetail(() => P.loadFeat(url), f => `<h2>${esc(rus(f))}</h2>
       <p class="hint">${esc(f.category || '')}${f.prerequisite ? ` · Требование: ${esc(f.prerequisite)}` : ''} · ${esc(f.source?.name?.label || '')}</p>
@@ -1963,7 +2256,7 @@
     state = loadState(edition);
     Object.assign(data, {
       cls: null, subclasses: [], subclass: null, eff: null, species: null, lineages: [], lineage: null,
-      background: null, feats: {}, featLists: { general: [], epic: [] }, spells: [], spellsKey: '', granted: [],
+      background: null, feats: {}, featLists: {}, spells: [], spellsKey: '', granted: [],
       spellSources: [], spellCandidates: {},
     });
     Object.keys(rendered).forEach(k => delete rendered[k]);
@@ -1986,11 +2279,14 @@
     try { tab = localStorage.getItem(TAB_KEY) === 'spells' ? 'spells' : 'builder'; } catch { /* storage blocked */ }
     setTab(tab);
     // Damage/condition names are the same in both editions; take them from the core-api.
-    const [damage, conditions] = await Promise.all([
+    const [damage, conditions, languages] = await Promise.all([
       fetchJson('/api/dnd/dictionaries/damage/types', () => coreDirect('dictionaries/damage/types')).catch(() => []),
       fetchJson('/api/dnd/dictionaries/conditions', () => coreDirect('dictionaries/conditions')).catch(() => []),
+      fetchJson('/api/dnd/dictionaries/languages', () => coreDirect('dictionaries/languages')).catch(() => []),
       loadEditionLists(),
     ]);
+    lists.languages = Object.fromEntries((Array.isArray(languages) ? languages : [])
+      .map(x => [x.value, x.label]).sort((a, b) => a[1].localeCompare(b[1], 'ru')));
     const toDict = arr => Object.fromEntries((Array.isArray(arr) ? arr : []).map(x => [x.value, (x.label || x.name || '').toLowerCase()]));
     lists.damage = toDict(damage);
     lists.conditions = toDict(conditions);

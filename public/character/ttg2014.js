@@ -93,7 +93,42 @@
   const CASTER_TYPES = { FULL: 'FULL', HALF: 'HALF', PARTLY: 'PACT', NONE: 'NONE' };
 
   // "/classes/fighter/eldritch_knight" -> "fighter/eldritch_knight"
-  const slug = url => String(url || '').replace(/^\/(classes|races|backgrounds|traits|feats|spells)\//, '');
+  const slug = url => String(url || '').replace(/^\/(classes|races|backgrounds|traits|feats|spells|options)\//, '');
+
+  // How many options a 2014 feature lets you pick (the legacy data lists options, not
+  // counts). "column": count comes from that class-table column; scaling: [level, count].
+  const OPTION_COUNTS = {
+    'Таинственные воззвания': { column: 'Известные воззвания' },
+    'Метамагия': { scaling: [[3, 2], [10, 3], [17, 4]] },
+    'Боевое превосходство': { scaling: [[3, 3], [7, 5], [10, 7], [15, 9]] },
+  };
+
+  // Skill/tool/language choices and fixed skills that 2014 races and feats only state in
+  // prose. Same shape as the 2024 core-api "mechanics.choices".
+  const CHOICE_GRANTS = {
+    races: {
+      'half-elf': { choices: [{ key: 'skills', type: 'SKILL', label: 'Универсальность навыков: 2 навыка', count: 2 }] },
+      'human/human_(variant)': { choices: [{ key: 'skill', type: 'SKILL', label: 'Навык', count: 1 }] },
+      elf: { skills: ['PERCEPTION'] }, // Keen Senses
+      'half-orc': { skills: ['INTIMIDATION'] }, // Menacing
+    },
+    feats: {
+      skilled: { choices: [{ key: 'skills', type: 'SKILL', label: 'Три навыка', count: 3 }] },
+      skill_expert: {
+        choices: [
+          { key: 'skill', type: 'SKILL', label: 'Навык', count: 1, onlyIfNotProficient: true },
+          { key: 'expertise', type: 'SKILL', grants: 'EXPERTISE', label: 'Компетентность', count: 1 },
+        ],
+      },
+      prodigy: {
+        choices: [
+          { key: 'skill', type: 'SKILL', label: 'Навык', count: 1, onlyIfNotProficient: true },
+          { key: 'expertise', type: 'SKILL', grants: 'EXPERTISE', label: 'Компетентность', count: 1 },
+          { key: 'language', type: 'LANGUAGE', label: 'Язык', count: 1 },
+        ],
+      },
+    },
+  };
 
   const source = src => ({
     name: { label: src?.shortName || '', rus: src?.name || src?.shortName || '' },
@@ -151,8 +186,38 @@
     return rows.some(r => r.length) ? rows : null;
   }
 
-  function normalizeFeature(f, parentKey) {
-    const isAsi = /^увеличение характеристик$/i.test((f.name || '').trim());
+  function normalizeFeature(f, parentKey, table) {
+    const name = (f.name || '').trim();
+    const isAsi = /^увеличение характеристик$/i.test(name);
+    const mechanics = f.mechanics && Object.keys(f.mechanics).length ? { ...f.mechanics } : {};
+    // Expertise (rogue, bard): 2 skills at the feature level and 2 more at each scaling level.
+    if (/^компетентность$/i.test(name)) {
+      const levels = [f.level || 1, ...(f.scaling || []).map(s => s.level)];
+      mechanics.choices = [{
+        key: 'expertise', type: 'SKILL', grants: 'EXPERTISE', label: 'Навыки для компетентности',
+        count: 2, scaling: levels.map((level, i) => ({ level, count: 2 * (i + 1) })),
+      }];
+    }
+    const options = (f.options || []).map(o => {
+      const lvl = /(\d+)\s*уров/i.exec(o.prerequisite || '');
+      return {
+        key: slug(o.url), url: slug(o.url),
+        name: { rus: o.name, eng: o.englishName || '' },
+        prerequisite: o.prerequisite ? [o.prerequisite] : [],
+        requiredClassLevel: lvl ? Number(lvl[1]) : null,
+        description: null, // loaded on demand from /options/<slug>
+      };
+    });
+    let optionsChoice = null;
+    if (options.length) {
+      const rule = OPTION_COUNTS[name] || {};
+      let scaling = (rule.scaling || []).map(([level, count]) => ({ level, count }));
+      if (rule.column) {
+        const col = (table || []).find(c => c.name === rule.column);
+        scaling = (col?.scaling || []).map(s => ({ level: s.level, count: Number(s.value) || 0 }));
+      }
+      optionsChoice = { label: name, count: 1, scaling };
+    }
     return {
       key: `${parentKey}-${f.id || f.name}`,
       name: f.name,
@@ -162,7 +227,19 @@
       abilityImprovement: isAsi,
       isSubclass: Boolean(f.archetypeFeature),
       optional: Boolean(f.optional),
-      mechanics: f.mechanics && Object.keys(f.mechanics).length ? f.mechanics : null,
+      options,
+      optionsChoice,
+      mechanics: Object.keys(mechanics).length ? mechanics : null,
+    };
+  }
+
+  function normalizeOption(detail, requestSlug) {
+    const req = String(detail.requirements || '').trim();
+    return {
+      key: requestSlug, url: requestSlug, name: name(detail.name),
+      prerequisite: req && !/^нет$/i.test(req) ? [req] : [],
+      description: detail.description || [],
+      source: source(detail.source),
     };
   }
 
@@ -197,7 +274,7 @@
       ? (pactCol ? pactCol.scaling.findIndex(s => toNumber(s.value) > 0) + 1 : 1)
       : firstSlotLevel || 1;
 
-    const features = (traits.features || []).map(f => normalizeFeature(f, url));
+    const features = (traits.features || []).map(f => normalizeFeature(f, url, tableFromLevels(traits)));
     const diceHp = baseTraits.diceHp || toNumber(base.dice) || 8;
     const mechanics = { ...(KNOWN_MECHANICS[`classes/${url}`] || {}) };
 
@@ -307,6 +384,9 @@
     const raceMechanics = { ...(detail.mechanics || {}) };
     delete raceMechanics.abilityBonuses; // applied separately, with the player's picks
     if (extra?.modifiers) raceMechanics.modifiers = { ...(raceMechanics.modifiers || {}), ...extra.modifiers };
+    const grant = CHOICE_GRANTS.races[requestSlug];
+    if (grant?.choices) raceMechanics.choices = grant.choices;
+    if (grant?.skills) raceMechanics.proficiencies = { ...(raceMechanics.proficiencies || {}), skills: grant.skills };
 
     // Traits that only restate numbers the sheet already shows (bonuses, size, speed) or pure flavour.
     const SHOWN_ELSEWHERE = /^(увеличение характеристик|возраст|мировоззрение|размер|скорость)$/i;
@@ -364,6 +444,8 @@
       mechanics.abilityBonuses = [{ abilities: detail.abilities, bonus: 1, upto: 20, count: 1 }];
     }
     if (extra?.modifiers) mechanics.modifiers = { ...(mechanics.modifiers || {}), ...extra.modifiers };
+    const grant = CHOICE_GRANTS.feats[requestSlug];
+    if (grant?.choices) mechanics.choices = grant.choices;
     const req = String(detail.requirements || '').trim();
     return {
       edition: '2014',
@@ -409,5 +491,6 @@
     normalizeBackground, normalizeBackgroundShort,
     normalizeFeat, normalizeFeatShort,
     normalizeSpell, normalizeSpellShort,
+    normalizeOption,
   };
 })();

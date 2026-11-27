@@ -145,6 +145,13 @@ button:hover, .fileBtn:hover { border-color: var(--site-accent); color: var(--si
 .chips label:has(input:disabled) { opacity: .45; cursor: not-allowed; }
 .chips input { margin: 0; }
 
+.choiceBlock { padding: 8px 0; border-top: 1px dashed var(--site-line); }
+.choiceBlock:first-child { border-top: 0; padding-top: 0; }
+.choiceBlock .choiceTitle .muted { font-size: 11px; }
+.choiceBlock select { padding: 5px 7px; font-size: 12px; }
+.pickRow { display: flex; align-items: center; gap: 6px; }
+.pickRow select { flex: 1; }
+.optionRow { display: flex; align-items: center; gap: 8px; padding: 6px 0; font-size: 13px; }
 .featSlot { padding: 10px 0; border-top: 1px dashed var(--site-line); }
 .featSlot:first-child { border-top: 0; padding-top: 0; }
 .featSlot .slotTitle { margin-bottom: 6px; font-size: 12px; color: var(--site-accent); }

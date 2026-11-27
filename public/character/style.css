@@ -146,6 +146,9 @@ button:hover, .fileBtn:hover { border-color: var(--site-accent); color: var(--si
 .chips input { margin: 0; }
 
 .smallBtn { margin-top: 6px; padding: 5px 10px; font-size: 12px; }
+.hpRolls { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 6px; }
+.panel .hpRolls label { margin: 0; font-size: 11px; }
+.hpRolls input { padding: 4px 6px; }
 #multiclassEditor .choiceTitle { margin: 10px 0 6px; color: var(--site-accent); font-size: 12px; }
 .mcRow { margin-bottom: 8px; padding: 8px; border: 1px solid var(--site-line); border-radius: 6px; }
 .mcRow label { margin-bottom: 6px; }

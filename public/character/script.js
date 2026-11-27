@@ -99,6 +99,8 @@
       // Extra classes: [{ classUrl, subclassUrl, level, spells: [url, …] }]. The fields above
       // (classUrl, subclassUrl, level, spells) are the main class; character level is the sum.
       multiclass: [],
+      // HP: 'average' | 'rolled' (hpRolls["main:2"] = die result) | 'manual' (hpManual total).
+      hpMode: 'average', hpRolls: {}, hpManual: null,
       feats: {},
       spells: [],
       armor: 'none', shield: false,
@@ -119,6 +121,8 @@
     if (!s.raceBonus || typeof s.raceBonus !== 'object') s.raceBonus = {};
     if (!s.extraSpells || typeof s.extraSpells !== 'object') s.extraSpells = {};
     if (!s.choices || typeof s.choices !== 'object') s.choices = {};
+    if (!['average', 'rolled', 'manual'].includes(s.hpMode)) s.hpMode = 'average';
+    if (!s.hpRolls || typeof s.hpRolls !== 'object') s.hpRolls = {};
     s.multiclass = (Array.isArray(s.multiclass) ? s.multiclass : []).slice(0, 3).map(m => ({
       classUrl: String(m?.classUrl || ''), subclassUrl: String(m?.subclassUrl || ''),
       level: clampInt(m?.level, 1, 19, 1), spells: Array.isArray(m?.spells) ? m.spells : [],
@@ -1069,14 +1073,24 @@
     const hd = eff?.hitDice || cls?.hitDice;
     const hitDice = entries.filter(e => e.eff?.hitDice || e.cls?.hitDice)
       .map(e => ({ level: e.level, die: e.eff?.hitDice || e.cls.hitDice }));
-    let hp = 0;
+    // In 'rolled' mode each later level uses the entered die result (default: the average).
+    const hpLevels = [];
+    entries.forEach((e, i) => {
+      const die = e.eff?.hitDice || e.cls?.hitDice;
+      if (!die) return;
+      for (let lvl = i === 0 ? 2 : 1; lvl <= e.level; lvl++) {
+        const key = `${e.key}:${lvl}`;
+        const roll = s.hpMode === 'rolled' ? clampInt(s.hpRolls[key], 1, die.maxValue, die.avg) : die.avg;
+        hpLevels.push({ key, entry: e, lvl, die, roll });
+      }
+    });
+    let hpCalculated = 0;
     if (hd) {
-      hp = Math.max(1, hd.maxValue + mods.CONSTITUTION);
-      hitDice.forEach((h, i) => {
-        for (let lvl = i === 0 ? 2 : 1; lvl <= h.level; lvl++) hp += Math.max(1, h.die.avg + mods.CONSTITUTION);
-      });
-      hp += mech.hp;
+      hpCalculated = Math.max(1, hd.maxValue + mods.CONSTITUTION)
+        + hpLevels.reduce((n, x) => n + Math.max(1, x.roll + mods.CONSTITUTION), 0) + mech.hp;
     }
+    const hpManual = s.hpMode === 'manual' && Number(s.hpManual) > 0 ? clampInt(s.hpManual, 1, 999, 1) : null;
+    const hp = hpManual ?? hpCalculated;
 
     // Armor class. Extra classes add only the armor their multiclass rules grant.
     const armor = ARMORS.find(a => a.id === s.armor) || ARMORS[0];
@@ -1184,7 +1198,7 @@
     }
 
     return {
-      L, CL, multi, entries, casters, hitDice, pb, base, scores, mods, sources, bgAbils, slots, feats,
+      L, CL, multi, entries, casters, hitDice, hpLevels, hpCalculated, pb, base, scores, mods, sources, bgAbils, slots, feats,
       saves, skills, bgSkills, classSkills, skillData,
       expertise, halfPb, jackOfAllTrades, choices, chosenOptions, chosenLanguages, chosenTools, featIssues,
       hp, hd, ac, acNote, warnings,
@@ -1324,7 +1338,7 @@
     spellsTab: $('spellsTab'), builderTab: $('builderTab'), tabBtnSpells: $('tabBtnSpells'), tabBtnBuilder: $('tabBtnBuilder'),
     tabSpellCount: $('tabSpellCount'), spellBrowserBody: $('spellBrowserBody'), spellSearch: $('spellSearch'),
     extraSpells: $('extraSpells'), choicesPanel: $('choicesPanel'), choicesBody: $('choicesBody'),
-    multiclassEditor: $('multiclassEditor'), addClassBtn: $('addClassBtn'), levelLabel: $('levelLabel'),
+    multiclassEditor: $('multiclassEditor'), addClassBtn: $('addClassBtn'), levelLabel: $('levelLabel'), hpEditor: $('hpEditor'),
     casterSwitch: $('casterSwitch'),
     filterLevels: $('filterLevels'), filterSchools: $('filterSchools'), filterConcGroup: $('filterConcGroup'),
     filterRitualGroup: $('filterRitualGroup'), filterNoV: $('filterNoV'), filterNoS: $('filterNoS'),
@@ -1509,10 +1523,35 @@
     el.abilityHint.innerHTML = hint;
 
     renderMulticlass(c);
+    renderHpEditor(c);
     renderFeatSlots(c);
     renderChoices(c);
     renderSpells(c);
     renderEquipmentChoices();
+  }
+
+  function renderHpEditor(c) {
+    document.querySelectorAll('input[name="hpMode"]').forEach(r => { r.checked = r.value === state.hpMode; });
+    const signature = JSON.stringify([state.hpMode, c.hpLevels.map(x => [x.key, x.die.maxValue]), state.hpMode === 'rolled' ? state.hpRolls : null,
+      c.hd?.maxValue, c.mods.CONSTITUTION]);
+    renderSection('hp', signature, () => {
+      if (!c.hd) { el.hpEditor.innerHTML = '<p class="hint">Выберите класс.</p>'; return; }
+      if (state.hpMode === 'manual') {
+        el.hpEditor.innerHTML = `<label>Максимум хитов <input type="number" min="1" max="999" data-hp-manual value="${esc(state.hpManual ?? '')}" placeholder="${c.hpCalculated}"></label>
+          <p class="hint">Расчётное значение: ${c.hpCalculated}. Пустое поле — использовать расчёт.</p>`;
+        return;
+      }
+      if (state.hpMode === 'average') {
+        el.hpEditor.innerHTML = `<p class="hint">1-й уровень — максимум кости (${c.hd.maxValue}), далее среднее за уровень; плюс модификатор Телосложения и бонусы.</p>`;
+        return;
+      }
+      el.hpEditor.innerHTML = c.hpLevels.length ? `
+        <p class="hint">1-й уровень: ${c.hd.maxValue} (максимум). Результаты бросков за следующие уровни, без Телосложения:</p>
+        <div class="hpRolls">${c.hpLevels.map(x => `<label title="${esc(rus(x.entry.cls))}, уровень ${x.lvl}">${c.multi ? esc(rus(x.entry.cls)).slice(0, 4) + '. ' : ''}${x.lvl} ур. (${esc(x.die.label)})
+          <input type="number" min="1" max="${x.die.maxValue}" data-hp-roll="${esc(x.key)}" value="${x.roll}"></label>`).join('')}</div>
+        <button type="button" data-action="roll-hp" class="smallBtn">Бросить все кости</button>`
+        : '<p class="hint">На 1 уровне бросать нечего: берётся максимум кости.</p>';
+    });
   }
 
   // Extra classes: class, subclass (when unlocked), level and a remove button each.
@@ -2030,7 +2069,8 @@
 
       <div class="combat">
         <div class="stat"><b>${c.ac}</b><span>Класс доспеха</span><small>${esc(c.acNote)}</small></div>
-        <div class="stat"><b>${c.hp || '—'}</b><span>Хиты</span><small>${c.multi ? 'по костям хитов классов' : c.hd ? `${c.hd.maxValue} + ${esc(c.hd.label)} за уровень` : ''}</small></div>
+        <div class="stat"><b>${c.hp || '—'}</b><span>Хиты</span><small>${s.hpMode === 'manual' && c.hp !== c.hpCalculated ? `вручную (расчёт ${c.hpCalculated})`
+          : s.hpMode === 'rolled' ? 'по броскам' : c.multi ? 'по костям хитов классов' : c.hd ? `${c.hd.maxValue} + ${esc(c.hd.label)} за уровень` : ''}</small></div>
         <div class="stat"><b>${signed(c.init)}</b><span>Инициатива</span><small>${c.initPB ? 'с бонусом мастерства' : ''}</small></div>
         <div class="stat"><b>${c.speed}</b><span>Скорость, фт.</span><small>${esc([...c.speedNotes, ...movement.slice(1)].join(', '))}</small></div>
       </div>
@@ -2307,6 +2347,9 @@
       const key = t.dataset.featOption;
       return setAndUpdate({ feats: { ...state.feats, [key]: { ...(state.feats[key] || {}), option: Number(t.value), picks: [] } } });
     }
+    if (t.name === 'hpMode') return setAndUpdate({ hpMode: t.value });
+    if (t.dataset.hpRoll) return setAndUpdate({ hpRolls: { ...state.hpRolls, [t.dataset.hpRoll]: Number(t.value) } });
+    if (t.dataset.hpManual != null) return setAndUpdate({ hpManual: t.value === '' ? null : Number(t.value) });
     if (t.dataset.mcField) {
       const i = Number(t.dataset.mc);
       const field = t.dataset.mcField;
@@ -2371,6 +2414,11 @@
       return setAndUpdate({ manual: Object.fromEntries(ABILITIES.map(a => [a.key, roll()])) });
     }
     if (t.dataset.action === 'auto-assign') return setAndUpdate({ standard: autoAssign() });
+    if (t.dataset.action === 'roll-hp' && lastComputed) {
+      const hpRolls = { ...state.hpRolls };
+      for (const x of lastComputed.hpLevels) hpRolls[x.key] = 1 + Math.floor(Math.random() * x.die.maxValue);
+      return setAndUpdate({ hpRolls });
+    }
   });
 
   // Primary ability first, then Constitution, then the class's saving throws, then the rest.

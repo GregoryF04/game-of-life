@@ -234,6 +234,8 @@
       mechanics.choices = [{
         key: 'expertise', type: 'SKILL', grants: 'EXPERTISE', label: 'Навыки для компетентности',
         count: 2, scaling: levels.map((level, i) => ({ level, count: 2 * (i + 1) })),
+        // 2014 rogue: "two skills, or one skill and thieves' tools".
+        allowTools: /^rogue(\/|$)/.test(parentKey) ? ['THIEVES_TOOLS'] : [],
       }];
     }
     const options = (f.options || []).map(o => {

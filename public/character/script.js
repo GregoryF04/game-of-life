@@ -907,6 +907,7 @@
           out.push({
             ...base, type: ch.grants === 'EXPERTISE' ? 'expertise' : 'skill',
             options: (ch.options || []).map(o => o.value).filter(Boolean), onlyIfNotProficient: Boolean(ch.onlyIfNotProficient),
+            allowTools: ch.allowTools || [],
           });
         } else if (ch.type === 'LANGUAGE') {
           out.push({ ...base, type: 'language' });
@@ -1172,9 +1173,22 @@
     for (const ch of choices.filter(x => x.type === 'skill')) {
       choicePicks(ch, v => skillValues.has(v) && (!ch.options.length || ch.options.includes(v))).forEach(v => skills.add(v));
     }
-    // Expertise only applies to skills the character is proficient in.
+    // Expertise applies to proficient skills (2014 rogue: also thieves' tools). A skill gets it
+    // from one source only: the first choice that took it keeps it, later ones can't repeat it.
+    const toolText = [cls?.proficiency?.tool, ...(background?.toolMarkup || []), ...(background?.toolProficiencies || []).map(t => t.url),
+      ...choices.filter(x => x.type === 'tool').flatMap(ch => choicePicks(ch))].join(' ').toLowerCase();
+    const hasThievesTools = /воровск|thieves/.test(toolText);
     const expertise = new Set();
-    for (const ch of choices.filter(x => x.type === 'expertise')) choicePicks(ch, v => skills.has(v)).forEach(v => expertise.add(v));
+    const toolExpertise = new Set();
+    const expertiseFrom = {}; // value -> choice key that holds it
+    for (const ch of choices.filter(x => x.type === 'expertise')) {
+      const valid = v => (skills.has(v) || (v === 'THIEVES_TOOLS' && ch.allowTools.includes(v) && hasThievesTools))
+        && (!expertiseFrom[v] || expertiseFrom[v] === ch.key);
+      for (const v of choicePicks(ch, valid)) {
+        expertiseFrom[v] = ch.key;
+        (v === 'THIEVES_TOOLS' ? toolExpertise : expertise).add(v);
+      }
+    }
     const chosenLanguages = choices.filter(x => x.type === 'language')
       .flatMap(ch => choicePicks(ch, v => Boolean(lists.languages?.[v]))).map(v => lists.languages[v]);
     const chosenTools = choices.filter(x => x.type === 'tool')
@@ -1322,7 +1336,7 @@
     return {
       L, CL, multi, entries, casters, hitDice, hpLevels, hpCalculated, pb, base, scores, mods, sources, bgAbils, slots, feats,
       saves, skills, bgSkills, classSkills, skillData,
-      expertise, halfPb, jackOfAllTrades, choices, chosenOptions, chosenLanguages, chosenTools, featIssues,
+      expertise, toolExpertise, expertiseFrom, hasThievesTools, halfPb, jackOfAllTrades, choices, chosenOptions, chosenLanguages, chosenTools, featIssues,
       hp, hd, ac, acNote, warnings,
       init: mods.DEXTERITY + (mech.initPB ? pb : halfPb) + mech.initBonus, initPB: mech.initPB,
       racePlan, extraSpells, extraStats, attacks,
@@ -1866,7 +1880,7 @@
   function renderChoices(c) {
     el.choicesPanel.hidden = !c.choices.length;
     const signature = JSON.stringify([c.choices.map(ch => [ch.key, ch.type, ch.count, (ch.options || []).length]),
-      state.choices, [...c.skills], state.level, Object.keys(lists.languages || {}).length, [...c.attacks.proficient]]);
+      state.choices, [...c.skills], state.level, Object.keys(lists.languages || {}).length, [...c.attacks.proficient], c.expertiseFrom, c.hasThievesTools]);
     renderSection('choices', signature, () => {
       el.choicesBody.innerHTML = c.choices.map(ch => {
         const picks = state.choices[ch.key] || [];
@@ -1883,13 +1897,26 @@
             label: `${rus(o)}${o.requiredClassLevel && o.requiredClassLevel > state.level ? ` (с ${o.requiredClassLevel} ур.)` : ''}${o.prerequisite?.length && !o.requiredClassLevel ? ` — ${o.prerequisite.join('; ')}` : ''}`,
             disabled: o.requiredClassLevel && o.requiredClassLevel > state.level,
           })), true);
-        } else if (ch.type === 'expertise' || ch.type === 'skill') {
-          const pool = ch.type === 'expertise' ? lists.skills.filter(sk => c.skills.has(sk.value))
-            : lists.skills.filter(sk => !ch.options.length || ch.options.includes(sk.value));
+        } else if (ch.type === 'expertise') {
+          // Proficient skills (+ thieves' tools for the 2014 rogue). A skill that already has
+          // expertise from another source is locked here.
+          const pool = lists.skills.filter(sk => c.skills.has(sk.value)).map(sk => ({ value: sk.value, label: sk.label }));
+          if (ch.allowTools.includes('THIEVES_TOOLS') && c.hasThievesTools) pool.push({ value: 'THIEVES_TOOLS', label: 'Воровские инструменты' });
+          const held = pool.filter(x => c.expertiseFrom[x.value] === ch.key).length;
+          const titleOf = key => c.choices.find(x => x.key === key)?.title || 'другой источник';
+          body = `<div class="chips">${pool.map(x => {
+            const owner = c.expertiseFrom[x.value];
+            const on = owner === ch.key;
+            const elsewhere = owner && !on;
+            const full = !on && held >= ch.count;
+            return `<label${elsewhere ? ` title="Уже компетентность: ${esc(titleOf(owner))}"` : ''}><input type="checkbox" data-choice-check="${esc(ch.key)}" value="${esc(x.value)}"${on || elsewhere ? ' checked' : ''}${elsewhere || full ? ' disabled' : ''}> ${esc(x.label)}${elsewhere ? ' <span class="muted">(уже)</span>' : ''}</label>`;
+          }).join('') || '<span class="hint">Нет навыков с владением.</span>'}</div>`;
+        } else if (ch.type === 'skill') {
+          const pool = lists.skills.filter(sk => !ch.options.length || ch.options.includes(sk.value));
           const chosen = choicePicks(ch);
           body = `<div class="chips">${pool.map(sk => {
             const on = chosen.includes(sk.value);
-            const already = ch.type === 'skill' && !on && c.skills.has(sk.value);
+            const already = !on && c.skills.has(sk.value);
             const full = !on && chosen.length >= ch.count;
             return `<label${already ? ' title="Уже есть владение"' : ''}><input type="checkbox" data-choice-check="${esc(ch.key)}" value="${esc(sk.value)}"${on || already ? ' checked' : ''}${already || full ? ' disabled' : ''}> ${esc(sk.label)}</label>`;
           }).join('') || '<span class="hint">Нет подходящих навыков.</span>'}</div>`;
@@ -2265,12 +2292,26 @@
     const passive = 10 + (perception ? skillValue(perception) : c.mods.WISDOM) + c.mech.passiveBonus;
 
     const prof = cls?.proficiency || {};
-    const tools = [prof.tool, ...(background?.toolProficiencies || []).map(t => {
-      const item = (background.startingEquipment || []).flatMap(o => o.items || []).find(i => i.url === t.url);
-      return item?.name || t.url;
-    })].filter(Boolean).map(esc);
-    for (const markup of background?.toolMarkup || []) tools.push(inline(markup)); // 2014 text
-    c.chosenTools.forEach(t => tools.push(esc(t)));
+    // Class tool text may carry TTG markup (2014 "{@item …}"); background/choice tools are names.
+    const toolParts = [
+      ...String(prof.tool || '').split(/[;,]\s*/),
+      ...(background?.toolProficiencies || []).map(t => {
+        const item = (background.startingEquipment || []).flatMap(o => o.items || []).find(i => i.url === t.url);
+        return item?.name || t.url;
+      }),
+      ...(background?.toolMarkup || []).flatMap(m => m.split(/,\s*/)),
+      ...c.chosenTools,
+    ].map(x => x.trim().replace(/\.$/, '')).filter(Boolean);
+    // One entry per tool, compared by visible text (class and background often both give one).
+    const seenTools = new Set();
+    const tools = [];
+    for (const part of toolParts) {
+      const html = inline(part);
+      const text = html.replace(/<[^>]+>/g, '').toLowerCase();
+      if (seenTools.has(text)) continue;
+      seenTools.add(text);
+      tools.push(text.includes('воровские инструменты') && c.toolExpertise.has('THIEVES_TOOLS') ? `${html} <span class="tag always">компетентность</span>` : html);
+    }
     const languages = [s.languages, ...c.chosenLanguages].filter(Boolean).join(', ');
 
     const senses = Object.entries(c.mech.senses).map(([k, v]) => `${SENSE_NAMES[k] || k} ${v} фт.`);

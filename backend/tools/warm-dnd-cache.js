@@ -18,18 +18,22 @@
 //   --all                include homebrew / playtest / third-party content (default: official books only)
 //   --delay <ms>         pause between requests (default 800)
 //   --no-spell-details   skip individual spell pages (lists are still saved)
+//   --gzip               write .json.gz files (what backend/seed/dnd14 holds); the proxy
+//                        reads both .json and .json.gz
 
 const fs = require('fs');
 const path = require('path');
+const zlib = require('zlib');
 const { resolveLegacy, requestWithRetry, cacheFileName } = require('../dnd-proxy');
 
 function parseArgs(argv) {
-  const args = { out: '', all: false, delay: 800, spellDetails: true };
+  const args = { out: '', all: false, delay: 800, spellDetails: true, gzip: false };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--out') args.out = argv[++i];
     else if (argv[i] === '--all') args.all = true;
     else if (argv[i] === '--delay') args.delay = Math.max(0, Number(argv[++i]) || 0);
     else if (argv[i] === '--no-spell-details') args.spellDetails = false;
+    else if (argv[i] === '--gzip') args.gzip = true;
   }
   return args;
 }
@@ -49,13 +53,37 @@ const wanted = item => args.all || item?.source?.group?.shortName === 'Basic';
 
 const stats = { fetched: 0, reused: 0, skipped: 0, failed: [] };
 
+// Existing entry in either form (plain or gzipped), or null.
+function readExisting(base) {
+  for (const [file, gz] of [[`${base}.gz`, true], [base, false]]) {
+    if (!fs.existsSync(file)) continue;
+    try {
+      const raw = fs.readFileSync(file);
+      return JSON.parse((gz ? zlib.gunzipSync(raw) : raw).toString('utf8'));
+    } catch { /* corrupt: fetch again */ }
+  }
+  return null;
+}
+
+function writeEntry(base, entry) {
+  const text = JSON.stringify(entry);
+  if (args.gzip) {
+    fs.writeFileSync(`${base}.gz`, zlib.gzipSync(text, { level: 9 }));
+    if (fs.existsSync(base)) fs.unlinkSync(base); // keep one form per key
+  } else {
+    fs.writeFileSync(base, text);
+  }
+}
+
 async function fetchKey(subPath, query = {}) {
   const req = resolveLegacy(subPath, query);
   if (!req) { stats.skipped++; return null; }
   const file = path.join(args.out, cacheFileName(req.key));
-  if (fs.existsSync(file)) {
+  const existing = readExisting(file);
+  if (existing) {
     try {
-      const json = JSON.parse(JSON.parse(fs.readFileSync(file, 'utf8')).body);
+      const json = JSON.parse(existing.body);
+      if (args.gzip && !fs.existsSync(`${file}.gz`)) writeEntry(file, existing); // convert in place
       stats.reused++;
       return json;
     } catch { /* corrupt: fetch again */ }
@@ -71,7 +99,7 @@ async function fetchKey(subPath, query = {}) {
       }
       if (res.status < 200 || res.status >= 300) throw new Error(`HTTP ${res.status}`);
       const json = JSON.parse(res.text);
-      fs.writeFileSync(file, JSON.stringify({ key: req.key, body: res.text, fetchedAt: Date.now() }));
+      writeEntry(file, { key: req.key, body: res.text, fetchedAt: Date.now() });
       stats.fetched++;
       if (stats.fetched % 50 === 0) console.log(`  ${stats.fetched} fetched…`);
       await sleep(args.delay);
@@ -103,11 +131,18 @@ async function each(items, worker) {
 
   console.log('Classes and subclasses…');
   const classIds = new Set([2]); // wizard list: Eldritch Knight / Arcane Trickster
+  const optionSlugs = new Set(); // fighting styles, invocations, metamagic, maneuvers, …
+  const collectOptions = detail => (detail?.traits?.features || [])
+    .forEach(f => (f.options || []).forEach(o => o.url && optionSlugs.add(String(o.url).replace(/^\/options\//, ''))));
   for (const c of classes.filter(wanted)) {
     const detail = await fetchKey(`classes/${slug(c.url)}`);
     if (detail?.id) classIds.add(detail.id);
-    await each((c.archetypes || []).filter(wanted), a => fetchKey(`classes/${slug(a.url)}`));
+    collectOptions(detail);
+    for (const a of (c.archetypes || []).filter(wanted)) collectOptions(await fetchKey(`classes/${slug(a.url)}`));
   }
+
+  console.log(`Feature options (${optionSlugs.size})…`);
+  await each([...optionSlugs], p => fetchKey(`options/${p}`));
 
   console.log('Races and subraces…');
   for (const r of races.filter(wanted)) {

@@ -153,6 +153,18 @@ function resolveLegacy(subPath, query) {
 // same format so a pre-built snapshot can be dropped into the cache directory.
 const cacheFileName = key => crypto.createHash('sha1').update(key).digest('hex') + '.json';
 
+// A cache entry { key, body, fetchedAt } from a .json or .json.gz file, or null.
+async function readEntry(file) {
+  try {
+    const raw = await fs.promises.readFile(file);
+    const text = file.endsWith('.gz') ? zlib.gunzipSync(raw).toString('utf8') : raw.toString('utf8');
+    const entry = JSON.parse(text);
+    return entry && typeof entry.body === 'string' ? entry : null;
+  } catch {
+    return null;
+  }
+}
+
 const REFRESH_BACKOFF_MS = 60 * 60 * 1000;
 
 // seedDir: optional read-only snapshot shipped with the app (backend/seed/...), consulted
@@ -175,19 +187,11 @@ function createCachedProxy({ cacheDir, resolve, seedDir = null }) {
     return path.join(cacheDir, cacheFileName(key));
   }
 
-  async function readEntry(file) {
-    try {
-      const raw = await fs.promises.readFile(file, 'utf8');
-      const entry = JSON.parse(raw);
-      return entry && typeof entry.body === 'string' ? entry : null;
-    } catch {
-      return null;
-    }
-  }
-
   async function readDisk(key) {
-    return (await readEntry(diskFile(key)))
-      || (seedDir ? readEntry(path.join(seedDir, cacheFileName(key))) : null);
+    if (!seedDir) return readEntry(diskFile(key));
+    const seedFile = path.join(seedDir, cacheFileName(key));
+    // The seed ships gzipped (.json.gz); plain .json also works.
+    return (await readEntry(diskFile(key))) || (await readEntry(`${seedFile}.gz`)) || readEntry(seedFile);
   }
 
   function writeDisk(key, entry) {
@@ -272,10 +276,10 @@ async function buildSpellFlags(dirs) {
     let files = [];
     try { files = await fs.promises.readdir(dir); } catch { continue; }
     for (const file of files) {
-      if (!file.endsWith('.json')) continue;
+      if (!file.endsWith('.json') && !file.endsWith('.json.gz')) continue;
       try {
-        const entry = JSON.parse(await fs.promises.readFile(path.join(dir, file), 'utf8'));
-        if (!/^spells\/[^?]+$/.test(entry.key || '')) continue;
+        const entry = await readEntry(path.join(dir, file));
+        if (!entry || !/^spells\/[^?]+$/.test(entry.key || '')) continue;
         const spell = JSON.parse(entry.body);
         flags[entry.key.slice('spells/'.length)] = {
           r: spell.ritual ? 1 : 0,

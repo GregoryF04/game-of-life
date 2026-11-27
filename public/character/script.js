@@ -275,6 +275,8 @@
           sources.push({
             key, title: rus(race), tag: 'раса', choices: [], listOptions: null,
             fixed: race.innateSpells.filter(g => g.spell?.url).map(g => ({ url: g.spell.url, spell: g.spell, level: g.requiredLevel || 1 })),
+            // The casting ability is a choice on the species or its lineage (elf "Происхождения эльфов").
+            choicePrefixes: [species && `race:${species.url}`, lineage && `race:${lineage.url}`].filter(Boolean),
           });
         }
         for (const { slot, feat } of feats) {
@@ -297,7 +299,10 @@
           // A background's Magic Initiate names its list: "… (Волшебник)".
           const defaultList = slot.key === 'origin' && listOptions
             ? listOptions.find(o => (background?.feat || '').includes(`(${o.label})`))?.value || '' : '';
-          sources.push({ key: `feat:${slot.key}`, title: rus(feat), tag: 'черта', fixed, choices, listOptions, defaultList });
+          sources.push({
+            key: `feat:${slot.key}`, title: rus(feat), tag: 'черта', fixed, choices, listOptions, defaultList,
+            slotKey: slot.key, choicePrefixes: [`feat:${slot.key}`], ability: listOptions ? 'fromList' : 'fromBonus',
+          });
         }
         return sources;
       },
@@ -380,11 +385,12 @@
         const fromEntry = (key, title, tag, entry) => {
           if (!entry) return;
           sources.push({
-            key, title, tag,
+            key, title, tag: entry.ritualBook ? 'ритуальная книга' : tag,
             fixed: (entry.fixed || []).map(([url, level]) => ({ url, level })),
-            choices: (entry.choices || []).map(ch => ({ ...ch, schools: ch.schools || [], ritual: false })),
+            choices: (entry.choices || []).map(ch => ({ ...ch, schools: ch.schools || [], ritual: Boolean(ch.ritual) })),
             listOptions: entry.listOptions ? entry.listOptions.map(v => ({ value: v, label: T14.CLASS_NAMES[v] || v })) : null,
             defaultList: '',
+            ability: entry.ability || null,
           });
         };
         const raceEntry = species && table.races[species.url];
@@ -434,6 +440,62 @@
     return setAndUpdate({ multiclass });
   }
 
+  // Circle of the Land: spells depend on a terrain the druid picks, which neither API has in a
+  // usable form. Rows are [druid level, [spell slugs]] (PHB 2014 / PHB 2024).
+  const LAND_CIRCLE = {
+    2014: {
+      'druid/land': {
+        level: 2,
+        terrains: {
+          arctic: ['Арктика', [[3, ['hold_person', 'spike_growth']], [5, ['sleet_storm', 'slow']], [7, ['freedom_of_movement', 'ice_storm']], [9, ['commune_with_nature', 'cone_of_cold']]]],
+          coast: ['Побережье', [[3, ['mirror_image', 'misty_step']], [5, ['water_breathing', 'water_walk']], [7, ['control_water', 'freedom_of_movement']], [9, ['conjure_elemental', 'scrying']]]],
+          desert: ['Пустыня', [[3, ['blur', 'silence']], [5, ['create_food_and_water', 'protection_from_energy']], [7, ['blight', 'hallucinatory_terrain']], [9, ['insect_plague', 'wall_of_stone']]]],
+          forest: ['Лес', [[3, ['barkskin', 'spider_climb']], [5, ['call_lightning', 'plant_growth']], [7, ['divination', 'freedom_of_movement']], [9, ['commune_with_nature', 'tree_stride']]]],
+          grassland: ['Луга', [[3, ['invisibility', 'pass_without_trace']], [5, ['daylight', 'haste']], [7, ['divination', 'freedom_of_movement']], [9, ['dream', 'insect_plague']]]],
+          mountain: ['Горы', [[3, ['spider_climb', 'spike_growth']], [5, ['lightning_bolt', 'meld_into_stone']], [7, ['stone_shape', 'stoneskin']], [9, ['passwall', 'wall_of_stone']]]],
+          swamp: ['Болото', [[3, ["melf's_acid_arrow", 'darkness']], [5, ['water_walk', 'stinking_cloud']], [7, ['freedom_of_movement', 'locate_creature']], [9, ['insect_plague', 'scrying']]]],
+          underdark: ['Подземье', [[3, ['spider_climb', 'web']], [5, ['gaseous_form', 'stinking_cloud']], [7, ['greater_invisibility', 'stone_shape']], [9, ['cloudkill', 'insect_plague']]]],
+        },
+      },
+    },
+    2024: {
+      'circle-of-the-land-phb': {
+        level: 3,
+        terrains: {
+          arid: ['Засушливая земля', [[3, ['blur-phb', 'burning-hands-phb', 'fire-bolt-phb']], [5, ['fireball-phb']], [7, ['blight-phb']], [9, ['wall-of-stone-phb']]]],
+          polar: ['Полярная земля', [[3, ['fog-cloud-phb', 'hold-person-phb', 'ray-of-frost-phb']], [5, ['sleet-storm-phb']], [7, ['ice-storm-phb']], [9, ['cone-of-cold-phb']]]],
+          temperate: ['Умеренная земля', [[3, ['misty-step-phb', 'shocking-grasp-phb', 'sleep-phb']], [5, ['lightning-bolt-phb']], [7, ['freedom-of-movement-phb']], [9, ['tree-stride-phb']]]],
+          tropical: ['Тропическая земля', [[3, ['acid-splash-phb', 'ray-of-sickness-phb', 'web-phb']], [5, ['stinking-cloud-phb']], [7, ['polymorph-phb']], [9, ['insect-plague-phb']]]],
+        },
+      },
+    },
+  };
+
+  // Adds the terrain choice to a Land druid and returns the terrain's always-prepared spells.
+  async function applyLandCircle(entry, eff, spells) {
+    const land = LAND_CIRCLE[edition]?.[entry.subclassUrl];
+    if (!land || !eff) return { eff, granted: [] };
+    const nameOf = url => rus(spells.find(x => x.url === url)) || url.replace(/[_-]phb$|_/g, ' ').trim();
+    const feature = {
+      key: 'land-terrain', name: 'Земля круга', level: land.level, scaling: [], mechanics: null, isSubclass: true,
+      description: ['Выберите местность: её заклинания круга всегда подготовлены и не учитываются в лимите.'],
+      options: Object.entries(land.terrains).map(([key, [name, rows]]) => ({
+        key, url: key, name: { rus: name },
+        description: rows.map(([lvl, urls]) => `{@b ${lvl} ур.:} ${urls.map(nameOf).join(', ')}`),
+      })),
+      optionsChoice: { label: 'Местность', count: 1, scaling: [] },
+    };
+    const withChoice = { ...eff, features: [...(eff.features || []), feature] };
+    const terrain = land.terrains[(state.choices[`${entry.prefix}opt:land-terrain`] || [])[0]];
+    if (!terrain || entry.level < land.level) return { eff: withChoice, granted: [] };
+    const items = terrain[1].filter(([lvl]) => lvl <= entry.level).flatMap(([lvl, urls]) => urls.map(url => ({ url, lvl })));
+    const granted = (await Promise.all(items.map(async ({ url, lvl }) => {
+      const spell = spells.find(x => x.url === url) || await P.loadSpell(url).catch(() => null);
+      return spell ? { spell, level: lvl, mode: 'always', from: `Круг земли: ${terrain[0]}` } : null;
+    }))).filter(Boolean);
+    return { eff: withChoice, granted };
+  }
+
   // Loads one class with its subclass (if unlocked), spell list and granted spells.
   async function loadClassEntry(entry) {
     const cls = entry.classUrl ? await P.loadClass(entry.classUrl) : null;
@@ -442,10 +504,15 @@
       && subclasses.some(x => x.url === entry.subclassUrl);
     const subclass = open ? await P.loadSubclass(entry.subclassUrl) : null;
     // Subclass detail already merges the parent's features and carries its own casting table.
-    const eff = subclass || cls;
+    let eff = subclass || cls;
     const spellsKey = eff ? P.spellListKey({ cls, subclass, eff }) : '';
     const spells = spellsKey ? await P.loadSpells(spellsKey) : [];
     const granted = spellsKey ? await P.grantedSpells(eff, entry.level, spells).catch(() => []) : [];
+    if (subclass) {
+      const land = await applyLandCircle(entry, eff, spells);
+      eff = land.eff;
+      granted.push(...land.granted.filter(g => !granted.some(x => x.spell.url === g.spell.url)));
+    }
     return { ...entry, cls, subclasses: Array.isArray(subclasses) ? subclasses : [], subclass, eff, spells, spellsKey, granted };
   }
 
@@ -538,7 +605,7 @@
     for (const src of data.spellSources || []) {
       for (const f of src.fixed) {
         if (f.spell && f.level <= charLevel() && !out.has(f.spell.url)) {
-          out.set(f.spell.url, { ...f.spell, alwaysFrom: src.title, sourceTag: src.tag, grantedAt: f.level });
+          out.set(f.spell.url, { ...f.spell, alwaysFrom: src.title, sourceTag: src.tag, sourceKey: src.key, grantedAt: f.level });
         }
       }
       for (const ch of src.choices) {
@@ -548,7 +615,7 @@
           const spell = cands.find(x => x.url === url);
           if (!spell || picked.includes(url) || picked.length >= ch.count) continue;
           picked.push(url);
-          if (!out.has(url)) out.set(url, { ...spell, alwaysFrom: src.title, sourceTag: src.tag });
+          if (!out.has(url)) out.set(url, { ...spell, alwaysFrom: src.title, sourceTag: src.tag, sourceKey: src.key });
         }
       }
     }
@@ -1145,6 +1212,12 @@
 
     // Spellcasting
     const extraSpells = extraSpellsNow(); // racial and feat spells, also for non-casters
+    // Save DC and attack bonus of each racial/feat spell source.
+    const extraStats = {};
+    for (const src of data.spellSources || []) {
+      const ab = sourceAbility(src, { choices, slots, scores });
+      extraStats[src.key] = { ...ab, dc: 8 + pb + mods[ab.key], attack: pb + mods[ab.key] };
+    }
     // One casting block per spellcasting class; racial/feat spells ride on the first one.
     const casters = [];
     for (const entry of entries) {
@@ -1203,10 +1276,41 @@
       expertise, halfPb, jackOfAllTrades, choices, chosenOptions, chosenLanguages, chosenTools, featIssues,
       hp, hd, ac, acNote, warnings,
       init: mods.DEXTERITY + (mech.initPB ? pb : halfPb) + mech.initBonus, initPB: mech.initPB,
-      racePlan, extraSpells,
+      racePlan, extraSpells, extraStats,
       speed: (props.movement?.base || 30) + speedBonus, speedNotes, movement: props.movement || {}, size: props.size, creatureType: props.type,
       mech, classFeatures, speciesFeatures, spell, resources,
     };
+  }
+
+  // Casting ability of a class list ("wizard-phb" / "wizard").
+  const LIST_ABILITY = {
+    bard: 'CHARISMA', cleric: 'WISDOM', druid: 'WISDOM', sorcerer: 'CHARISMA', warlock: 'CHARISMA',
+    wizard: 'INTELLIGENCE', artificer: 'INTELLIGENCE', paladin: 'CHARISMA', ranger: 'WISDOM',
+  };
+
+  // Spellcasting ability of a racial/feat spell source: the player's pick where the data has
+  // one (2024), else the source's rule (fixed / class list / ability the feat raised),
+  // else the best mental ability.
+  function sourceAbility(src, { choices, slots, scores }) {
+    for (const ch of choices) {
+      if (ch.type === 'ability' && (src.choicePrefixes || []).some(p => ch.key.startsWith(`${p}:`))) {
+        const pick = choicePicks(ch, v => Boolean(ABILITY[v]))[0];
+        if (pick) return { key: pick, chosen: true };
+      }
+    }
+    if (src.ability === 'fromList') {
+      const ref = sourceListRef(src, { list: 'choice' });
+      const key = LIST_ABILITY[String(ref).replace(/-[a-z0-9]+$/, '')];
+      if (key) return { key };
+    }
+    if (src.ability === 'fromBonus') {
+      const slot = slots.find(x => `feat:${x.key}` === src.key);
+      const plan = slot && featBonusPlan(slot);
+      if (plan?.chosen?.[0]) return { key: plan.chosen[0] };
+    }
+    if (ABILITY[src.ability]) return { key: src.ability };
+    const best = ['INTELLIGENCE', 'WISDOM', 'CHARISMA'].sort((a, b) => scores[b] - scores[a])[0];
+    return { key: best, guessed: true };
   }
 
   // Spellcasting of one class entry at its own class level.
@@ -1728,7 +1832,7 @@
   function renderExtraSpells(c) {
     const sources = data.spellSources || [];
     const signature = JSON.stringify([sources.map(s => [s.key, s.title, s.fixed.length, s.choices.map(ch => [ch.key, ch.count])]),
-      state.extraSpells, state.level, Object.entries(data.spellCandidates || {}).map(([k, v]) => [k, v.length]), sourcesKey()]);
+      state.extraSpells, state.level, Object.entries(data.spellCandidates || {}).map(([k, v]) => [k, v.length]), sourcesKey(), c.extraStats]);
     renderSection('extraSpells', signature, () => {
       if (!sources.length) { el.extraSpells.innerHTML = ''; return; }
       const spellLink = x => `<button type="button" class="linkish" data-spell-info="${esc(x.url)}">${esc(rus(x))}</button>`;
@@ -1752,7 +1856,9 @@
                 <option value="">— выберите —</option>${cands.map(x =>
                   `<option value="${esc(x.url)}"${picks[i] === x.url ? ' selected' : ''}>${esc(rus(x))}${x.school ? ` · ${esc(x.school)}` : ''}</option>`).join('')}</select>`).join('')}</div></div>`;
           }).join('');
-          return `<div class="extraSource"><div class="slotTitle">${esc(src.title)} <span class="tag">${esc(src.tag)}</span></div>
+          const st = c.extraStats[src.key];
+          const stats = st ? `<span class="muted">Сл ${st.dc} · атака ${signed(st.attack)} · ${esc(ABILITY[st.key]?.short || '')}${st.guessed ? ' (наибольшая; выберите характеристику в «Выборах»)' : ''}</span>` : '';
+          return `<div class="extraSource"><div class="slotTitle">${esc(src.title)} <span class="tag">${esc(src.tag)}</span> ${stats}</div>
             ${fixed ? `<ul class="list">${fixed}</ul>` : ''}${list}${choices}</div>`;
         }).join('')}
       </section>`;
@@ -2004,11 +2110,15 @@
       spellHtml = `
         <section class="box">
           <h3>Врождённые заклинания</h3>
-          <table class="spellTable"><tr><th>Ур.</th><th>Название</th><th>Школа</th><th>Источник</th></tr>${rows.map(x => `
+          <table class="spellTable"><tr><th>Ур.</th><th>Название</th><th>Школа</th><th>Сл / атака</th><th>Источник</th></tr>${rows.map(x => {
+            const st = c.extraStats[x.sourceKey];
+            return `
             <tr><td>${x.level || 'з'}</td>
               <td><button type="button" class="linkish" data-spell-info="${esc(x.url)}">${esc(rus(x))}</button></td>
               <td>${esc(x.school || '')}</td>
-              <td><span class="tag always">${esc(x.sourceTag || '')}</span> ${esc(x.alwaysFrom || '')}</td></tr>`).join('')}</table>
+              <td>${st ? `${st.dc} / ${signed(st.attack)} <span class="muted">${esc(ABILITY[st.key]?.short || '')}</span>` : '—'}</td>
+              <td><span class="tag always">${esc(x.sourceTag || '')}</span> ${esc(x.alwaysFrom || '')}</td></tr>`;
+          }).join('')}</table>
         </section>`;
     }
     // One section per casting class; shared multiclass slots are shown once, on the first.

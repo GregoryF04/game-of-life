@@ -37,43 +37,81 @@
   // XGE and TCE races and feats. fixed: [spell slug, character level]; choices pick from a
   // class list ("list"), from the list chosen in listOptions ("choice"), or from any list.
   const SPELL_GRANTS = {
+    // ability: spellcasting ability of the source ('fromList' = of the chosen class list,
+    // 'fromBonus' = the ability the feat raised).
     races: {
-      tiefling: { fixed: [['thaumaturgy', 1], ['hellish_rebuke', 3], ['darkness', 5]], replacedBySubrace: true },
-      'tiefling/asmodeus': { fixed: [['thaumaturgy', 1], ['hellish_rebuke', 3], ['darkness', 5]] },
-      'elf/high': { choices: [{ key: 'cantrip', label: 'Заговор волшебника', count: 1, level: 0, list: 'wizard' }] },
-      'elf/drow': { fixed: [['dancing_lights', 1], ['faerie_fire', 3], ['darkness', 5]] },
-      'gnome/forest': { fixed: [['minor_illusion', 1]] },
+      tiefling: { fixed: [['thaumaturgy', 1], ['hellish_rebuke', 3], ['darkness', 5]], replacedBySubrace: true, ability: 'CHARISMA' },
+      'tiefling/asmodeus': { fixed: [['thaumaturgy', 1], ['hellish_rebuke', 3], ['darkness', 5]], ability: 'CHARISMA' },
+      'tiefling/baalzebul': { fixed: [['thaumaturgy', 1], ['ray_of_sickness', 3], ['crown_of_madness', 5]], ability: 'CHARISMA' },
+      'tiefling/dispater': { fixed: [['thaumaturgy', 1], ['disguise_self', 3], ['detect_thoughts', 5]], ability: 'CHARISMA' },
+      'tiefling/fierna': { fixed: [['friends', 1], ['charm_person', 3], ['suggestion', 5]], ability: 'CHARISMA' },
+      'tiefling/glasya': { fixed: [['minor_illusion', 1], ['disguise_self', 3], ['invisibility', 5]], ability: 'CHARISMA' },
+      'tiefling/levistus': { fixed: [['ray_of_frost', 1], ['armor_of_agathys', 3], ['darkness', 5]], ability: 'CHARISMA' },
+      'tiefling/mammon': { fixed: [['mage_hand', 1], ["tenser's_floating_disk", 3], ['arcane_lock', 5]], ability: 'CHARISMA' },
+      'tiefling/mephistopheles': { fixed: [['mage_hand', 1], ['burning_hands', 3], ['flame_blade', 5]], ability: 'CHARISMA' },
+      'tiefling/zariel': { fixed: [['thaumaturgy', 1], ['searing_smite', 3], ['branding_smite', 5]], ability: 'CHARISMA' },
+      'tiefling/variant_hellfire': { fixed: [['thaumaturgy', 1], ['burning_hands', 3], ['darkness', 5]], ability: 'CHARISMA' },
+      'tiefling/variant_devils_tongue': { fixed: [['vicious_mockery', 1], ['charm_person', 3], ['enthrall', 5]], ability: 'CHARISMA' },
+      'tiefling/variant_winged': { fixed: [] }, // wings replace Infernal Legacy
+      'elf/high': { choices: [{ key: 'cantrip', label: 'Заговор волшебника', count: 1, level: 0, list: 'wizard' }], ability: 'INTELLIGENCE' },
+      'elf/drow': { fixed: [['dancing_lights', 1], ['faerie_fire', 3], ['darkness', 5]], ability: 'CHARISMA' },
+      'gnome/forest': { fixed: [['minor_illusion', 1]], ability: 'INTELLIGENCE' },
+      aasimar: { fixed: [['light', 1]], ability: 'CHARISMA' },
+      aasimar_mpmm: { fixed: [['light', 1]], ability: 'CHARISMA' },
+      firbolg: { fixed: [['detect_magic', 1], ['disguise_self', 1]], ability: 'WISDOM' },
+      firbolg_mpmm: { fixed: [['detect_magic', 1], ['disguise_self', 1]], ability: 'WISDOM' },
+      triton: { fixed: [['fog_cloud', 1], ['gust_of_wind', 3], ['wall_of_water', 5]], ability: 'CHARISMA' },
+      triton_mpmm: { fixed: [['fog_cloud', 1], ['gust_of_wind', 3], ['wall_of_water', 5]], ability: 'CHARISMA' },
+      'yuan-ti': { fixed: [['poison_spray', 1], ['animal_friendship', 1], ['suggestion', 3]], ability: 'CHARISMA' },
+      'yuan-ti_mpmm': { fixed: [['poison_spray', 1], ['animal_friendship', 1], ['suggestion', 3]], ability: 'CHARISMA' },
+      'genasi/air': { fixed: [['levitate', 1]], ability: 'CONSTITUTION' },
+      'genasi/earth': { fixed: [['pass_without_trace', 1]], ability: 'CONSTITUTION' },
+      'genasi/fire': { fixed: [['produce_flame', 1], ['burning_hands', 3]], ability: 'CONSTITUTION' },
+      'genasi/water': { fixed: [['shape_water', 1], ['create_or_destroy_water', 3]], ability: 'CONSTITUTION' },
+      genasi_air_mpmm: { fixed: [['shocking_grasp', 1], ['feather_fall', 3], ['levitate', 5]], ability: 'INTELLIGENCE' },
+      genasi_earthr_mpmm: { fixed: [['blade_ward', 1], ['pass_without_trace', 5]], ability: 'INTELLIGENCE' },
+      genasi_fair_mpmm: { fixed: [['produce_flame', 1], ['burning_hands', 3], ['flame_blade', 5]], ability: 'INTELLIGENCE' },
+      genasi_water_mpmm: { fixed: [['acid_splash', 1], ['create_or_destroy_water', 3], ['water_walk', 5]], ability: 'INTELLIGENCE' },
+      githyanki_mpmm: { fixed: [['mage_hand', 1], ['jump', 3], ['misty_step', 5]], ability: 'INTELLIGENCE' },
+      githzerai_mpmm: { fixed: [['mage_hand', 1], ['shield', 3], ['detect_thoughts', 5]], ability: 'WISDOM' },
+      deep_gnome_mpmm: { fixed: [['disguise_self', 3], ['nondetection', 5]], ability: 'INTELLIGENCE' },
     },
     feats: {
       magic_initiate: {
-        listOptions: ['bard', 'cleric', 'druid', 'sorcerer', 'warlock', 'wizard'],
+        listOptions: ['bard', 'cleric', 'druid', 'sorcerer', 'warlock', 'wizard'], ability: 'fromList',
         choices: [
           { key: 'cantrip', label: 'Два заговора', count: 2, level: 0, list: 'choice' },
           { key: 'spell', label: 'Заклинание 1 уровня', count: 1, level: 1, list: 'choice' },
         ],
       },
+      // Ritual Caster: a ritual book with two 1st-level rituals of the chosen class.
+      ritual_caster: {
+        listOptions: ['bard', 'cleric', 'druid', 'sorcerer', 'warlock', 'wizard'], ability: 'fromList', ritualBook: true,
+        choices: [{ key: 'rituals', label: 'Два ритуала 1 уровня для ритуальной книги', count: 2, level: 1, list: 'choice', ritual: true }],
+      },
       fey_touched: {
-        fixed: [['misty_step', 1]],
+        fixed: [['misty_step', 1]], ability: 'fromBonus',
         choices: [{ key: 'spell', label: 'Заклинание 1 уровня: прорицание или очарование', count: 1, level: 1, list: 'any', schools: ['Прорицание', 'Очарование'] }],
       },
       shadow_touched: {
-        fixed: [['invisibility', 1]],
+        fixed: [['invisibility', 1]], ability: 'fromBonus',
         choices: [{ key: 'spell', label: 'Заклинание 1 уровня: иллюзия или некромантия', count: 1, level: 1, list: 'any', schools: ['Иллюзия', 'Некромантия'] }],
       },
-      telekinetic: { fixed: [['mage_hand', 1]] },
-      telepathic: { fixed: [['detect_thoughts', 1]] },
+      telekinetic: { fixed: [['mage_hand', 1]], ability: 'fromBonus' },
+      telepathic: { fixed: [['detect_thoughts', 1]], ability: 'fromBonus' },
       artificer_initiate: {
+        ability: 'INTELLIGENCE',
         choices: [
           { key: 'cantrip', label: 'Заговор изобретателя', count: 1, level: 0, list: 'artificer' },
           { key: 'spell', label: 'Заклинание изобретателя 1 уровня', count: 1, level: 1, list: 'artificer' },
         ],
       },
-      drow_high_magic: { fixed: [['detect_magic', 1], ['levitate', 1], ['dispel_magic', 1]] },
+      drow_high_magic: { fixed: [['detect_magic', 1], ['levitate', 1], ['dispel_magic', 1]], ability: 'CHARISMA' },
       wood_elf_magic: {
-        fixed: [['longstrider', 1], ['pass_without_trace', 1]],
+        fixed: [['longstrider', 1], ['pass_without_trace', 1]], ability: 'WISDOM',
         choices: [{ key: 'cantrip', label: 'Заговор друида', count: 1, level: 0, list: 'druid' }],
       },
-      fey_teleportation: { fixed: [['misty_step', 1]] },
+      fey_teleportation: { fixed: [['misty_step', 1]], ability: 'INTELLIGENCE' },
     },
   };
   // Legacy class ids, used by the spell-list endpoint.

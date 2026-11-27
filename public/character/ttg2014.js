@@ -141,6 +141,42 @@
     'Боевое превосходство': { scaling: [[3, 3], [7, 5], [10, 7], [15, 9]] },
   };
 
+  // TCE optional class features. TTG lists Deft Explorer's parts as separate features: they
+  // come with it ("group"). mechanics / grants: what the legacy data only says in prose.
+  const OPTIONAL_GROUPS = { 'Хитрец': 'Искусный исследователь', 'Бродяга': 'Искусный исследователь', 'Неутомимый': 'Искусный исследователь' };
+  const OPTIONAL_MECHANICS = {
+    'Хитрец': {
+      choices: [
+        { key: 'canny-expertise', type: 'SKILL', grants: 'EXPERTISE', label: 'Хитрец: компетентность', count: 1 },
+        { key: 'canny-languages', type: 'LANGUAGE', label: 'Хитрец: два языка', count: 2 },
+      ],
+    },
+    'Бродяга': { modifiers: { speedBonus: 5, climbEqualsWalk: true, swimEqualsWalk: true } },
+    'Изначальное знание': {
+      choices: [{
+        key: 'primal-knowledge', type: 'SKILL', label: 'Навык из списка варвара', count: 1, onlyIfNotProficient: true,
+        options: ['ANIMAL_HANDLING', 'ATHLETICS', 'INTIMIDATION', 'NATURE', 'PERCEPTION', 'SURVIVAL'].map(value => ({ value })),
+      }],
+    },
+  };
+  // Always-prepared spells of an optional feature: [slug, class level].
+  const OPTIONAL_SPELLS = {
+    'Изначальное чутье': [['speak_with_animals', 3], ['beast_sense', 5], ['speak_with_plants', 9], ['locate_creature', 13], ['commune_with_nature', 17]],
+  };
+
+  // "{@i умение, которое заменяет умение {@link Избранного врага | url:#c51}}" or
+  // "… заменяющее умения «Божественный удар» или «Могущественное колдовство»".
+  function replacementOf(f) {
+    const first = String((f.description || [])[0] || '').trim();
+    // Only the italic preface marks a replacement; feature text such as Martial Versatility
+    // ("… когда вам предоставляется «Увеличение характеристик», можете заменить …") does not.
+    if (!first.startsWith('{@i') || !/замен/i.test(first)) return { ids: [], names: [] };
+    return {
+      ids: [...first.matchAll(/url:#([ac]\d+)/g)].map(m => m[1]),
+      names: [...first.matchAll(/«([^»]+)»/g)].map(m => m[1].trim()),
+    };
+  }
+
   // Skill/tool/language choices and fixed skills that 2014 races and feats only state in
   // prose. Same shape as the 2024 core-api "mechanics.choices".
   const CHOICE_GRANTS = {
@@ -258,8 +294,14 @@
       }
       optionsChoice = { label: name, count: 1, scaling };
     }
+    if (f.optional && OPTIONAL_MECHANICS[name]) {
+      const extra = OPTIONAL_MECHANICS[name];
+      if (extra.choices) mechanics.choices = [...(mechanics.choices || []), ...extra.choices];
+      if (extra.modifiers) mechanics.modifiers = { ...(mechanics.modifiers || {}), ...extra.modifiers };
+    }
     return {
       key: `${parentKey}-${f.id || f.name}`,
+      featureId: f.id || name,
       name: f.name,
       level: f.level || 1,
       description: f.description || [],
@@ -267,6 +309,9 @@
       abilityImprovement: isAsi,
       isSubclass: Boolean(f.archetypeFeature),
       optional: Boolean(f.optional),
+      replaces: f.optional ? replacementOf(f) : null,
+      optionalGroup: f.optional ? OPTIONAL_GROUPS[name] || null : null,
+      grantSpells: f.optional ? OPTIONAL_SPELLS[name] || null : null,
       options,
       optionsChoice,
       mechanics: Object.keys(mechanics).length ? mechanics : null,

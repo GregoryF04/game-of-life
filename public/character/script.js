@@ -94,6 +94,7 @@
       bgMode: '2-1', bgPlus2: '', bgPlus1: '',
       raceBonus: {}, // 2014: free ability picks per race bonus entry, { [entryIndex]: [ABILITY, ...] }
       choices: {}, // feature options, expertise, skills, tools, languages: { [choiceKey]: [value, ...] }
+      optionalFeatures: {}, // 2014 TCE optional class features turned on: { "main:c52": true }
       extraSpells: {}, // racial/feat spell choices: { [sourceKey]: { list, picks: { [choiceKey]: [url, ...] } } }
       classSkills: [],
       // Extra classes: [{ classUrl, subclassUrl, level, spells: [url, …] }]. The fields above
@@ -125,6 +126,7 @@
     if (!s.raceBonus || typeof s.raceBonus !== 'object') s.raceBonus = {};
     if (!s.extraSpells || typeof s.extraSpells !== 'object') s.extraSpells = {};
     if (!s.choices || typeof s.choices !== 'object') s.choices = {};
+    if (!s.optionalFeatures || typeof s.optionalFeatures !== 'object') s.optionalFeatures = {};
     if (!['average', 'rolled', 'manual'].includes(s.hpMode)) s.hpMode = 'average';
     s.weapons = Array.isArray(s.weapons) ? s.weapons.filter(k => typeof k === 'string') : [];
     s.inventory = (Array.isArray(s.inventory) ? s.inventory : [])
@@ -558,6 +560,17 @@
       eff = land.eff;
       granted.push(...land.granted.filter(g => !granted.some(x => x.spell.url === g.spell.url)));
     }
+    // Spells of turned-on TCE optional features (e.g. ranger Primal Awareness), by class level.
+    if (spellsKey && eff) {
+      const active = featureFilter({ ...entry, eff });
+      const rows = (eff.features || []).filter(f => f.grantSpells && f.optional && active(f))
+        .flatMap(f => f.grantSpells.filter(([, lvl]) => lvl <= entry.level).map(([url, lvl]) => ({ url, lvl, from: f.name })));
+      for (const row of rows) {
+        if (granted.some(x => x.spell.url === row.url)) continue;
+        const spell = spells.find(x => x.url === row.url) || await P.loadSpell(row.url).catch(() => null);
+        if (spell) granted.push({ spell, level: row.lvl, mode: 'always', from: row.from });
+      }
+    }
     return { ...entry, cls, subclasses: Array.isArray(subclasses) ? subclasses : [], subclass, eff, spells, spellsKey, granted };
   }
 
@@ -868,6 +881,21 @@
     return slots;
   }
 
+  // TCE optional class features (2014): off by default. A feature that is on hides the one it
+  // replaces (and that one's later improvements); Deft Explorer's parts follow Deft Explorer.
+  const optionalKey = (entry, f) => `${entry.key}:${f.featureId}`;
+  function optionalParent(entry, f) {
+    return f.optionalGroup ? (entry.eff?.features || []).find(g => g.optional && g.name === f.optionalGroup) || null : null;
+  }
+  function featureFilter(entry) {
+    const features = entry.eff?.features || [];
+    const on = f => Boolean(state.optionalFeatures[optionalKey(entry, optionalParent(entry, f) || f)]);
+    const enabled = features.filter(f => f.optional && on(f) && f.level <= entry.level);
+    const ids = new Set(enabled.flatMap(f => f.replaces?.ids || []));
+    const names = new Set(enabled.flatMap(f => f.replaces?.names || []));
+    return f => (f.optional ? on(f) : !(ids.has(f.featureId) || names.has(f.name)));
+  }
+
   // Loaded class entries; before the first load, the main class from data.*.
   function classEntriesLoaded() {
     if (data.entries?.length) return data.entries;
@@ -925,8 +953,9 @@
     for (const entry of entries) {
       const L = entry.level;
       const tag = entries.length > 1 ? ` (${rus(entry.cls)})` : '';
+      const active = featureFilter(entry);
       for (const f of entry.eff?.features || []) {
-        if (f.level > L || (entry.subclass && f.hideInSubclasses)) continue;
+        if (f.level > L || (entry.subclass && f.hideInSubclasses) || !active(f)) continue;
         if (f.options?.length && f.optionsChoice) {
           const count = scaledCount(f.optionsChoice, L);
           if (count) {
@@ -1092,7 +1121,7 @@
     // Structured mechanics from class/subclass features, species traits and feats.
     const mech = {
       hp: 0, senses: {}, resist: new Set(), immune: new Set(), vuln: new Set(), condImm: new Set(),
-      initPB: false, initBonus: 0, passiveBonus: 0, skills: new Set(), saves: new Set(), counters: [],
+      initPB: false, initBonus: 0, passiveBonus: 0, speedBonus: 0, equalsWalk: new Set(), skills: new Set(), saves: new Set(), counters: [],
     };
     // classLevel: level of the class the mechanics come from (counters scale with it);
     // race and feat mechanics use the character level.
@@ -1115,6 +1144,9 @@
       if (mo.initiativeProficiencyBonus) mech.initPB = true;
       mech.initBonus += Number(mo.initiativeBonus) || 0;
       mech.passiveBonus += Number(mo.passivePerceptionBonus) || 0;
+      // Speed bonuses and "climb/swim/fly speed equals walking speed" (TCE Roving; 2024 data's speed flags).
+      mech.speedBonus += Number(mo.speedBonus) || 0;
+      for (const kind of ['climb', 'swim', 'fly']) if (mo[`${kind}EqualsWalk`] || mo.speed?.[`${kind}EqualsWalk`]) mech.equalsWalk.add(kind);
       const prof = m.proficiencies || {};
       (prof.skills || []).forEach(x => typeof x === 'string' && mech.skills.add(x));
       (prof.savingThrows || []).forEach(x => typeof x === 'string' && mech.saves.add(x));
@@ -1125,8 +1157,9 @@
     const classFeatures = [];
     for (const entry of entries) {
       if (entry.eff) addMech(entry.eff.mechanics, 1, rus(entry.eff), entry.level);
+      const active = featureFilter(entry);
       for (const f of expandFeatures(entry.eff?.features)) {
-        if (f.level > entry.level || (entry.subclass && f.hideInSubclasses)) continue;
+        if (f.level > entry.level || (entry.subclass && f.hideInSubclasses) || !active(f)) continue;
         classFeatures.push(multi ? { ...f, classTag: rus(entry.cls), entryKey: entry.key } : { ...f, entryKey: entry.key });
         addMech(f.mechanics, f.level, f.name, entry.level);
       }
@@ -1322,6 +1355,12 @@
       resources.push({ name: c.name, value: evalCounter(max, { pb, L: c.classLevel, mods }), recovery: c.recovery });
     }
 
+    // Walking speed with all bonuses; climb/swim/fly that equal it (e.g. TCE Roving).
+    if (mech.speedBonus) speedNotes.push(`+${mech.speedBonus}`);
+    const walkSpeed = (props.movement?.base || 30) + speedBonus + mech.speedBonus;
+    const movement = { ...(props.movement || {}) };
+    for (const kind of mech.equalsWalk) movement[kind] = Math.max(movement[kind] || 0, walkSpeed);
+
     // Feat prerequisites, checked against the finished character.
     const raceName = `${rus(species)} ${rus(lineage)}`.toLowerCase();
     const featIssues = {};
@@ -1340,7 +1379,7 @@
       hp, hd, ac, acNote, warnings,
       init: mods.DEXTERITY + (mech.initPB ? pb : halfPb) + mech.initBonus, initPB: mech.initPB,
       racePlan, extraSpells, extraStats, attacks,
-      speed: (props.movement?.base || 30) + speedBonus, speedNotes, movement: props.movement || {}, size: props.size, creatureType: props.type,
+      speed: walkSpeed, speedNotes, movement, size: props.size, creatureType: props.type,
       mech, classFeatures, speciesFeatures, spell, resources,
     };
   }
@@ -1619,7 +1658,7 @@
     spellPanel: $('spellPanel'), spellSummary: $('spellSummary'), spellCounts: $('spellCounts'),
     spellsTab: $('spellsTab'), builderTab: $('builderTab'), tabBtnSpells: $('tabBtnSpells'), tabBtnBuilder: $('tabBtnBuilder'),
     tabSpellCount: $('tabSpellCount'), spellBrowserBody: $('spellBrowserBody'), spellSearch: $('spellSearch'),
-    extraSpells: $('extraSpells'), choicesPanel: $('choicesPanel'), choicesBody: $('choicesBody'),
+    extraSpells: $('extraSpells'), choicesPanel: $('choicesPanel'), choicesBody: $('choicesBody'), optionalBody: $('optionalBody'),
     multiclassEditor: $('multiclassEditor'), addClassBtn: $('addClassBtn'), levelLabel: $('levelLabel'), hpEditor: $('hpEditor'),
     weaponSelect: $('weaponSelect'), weaponList: $('weaponList'), inventoryList: $('inventoryList'), rosterSelect: $('rosterSelect'),
     itemName: $('itemNameInput'), itemQty: $('itemQtyInput'),
@@ -1877,8 +1916,35 @@
     ability: 'заклинательная характеристика', mastery: 'оружейные приёмы',
   };
 
+  // TCE optional class features (2014): a checkbox each, with what it replaces.
+  function renderOptionalFeatures(c) {
+    const rows = [];
+    for (const entry of c.entries) {
+      const features = entry.eff?.features || [];
+      for (const f of features) {
+        if (!f.optional || f.optionalGroup || f.level > entry.level) continue;
+        const replaced = [
+          ...(f.replaces?.ids || []).map(id => features.find(g => g.featureId === id)?.name).filter(Boolean),
+          ...(f.replaces?.names || []),
+        ];
+        const parts = features.filter(g => g.optionalGroup === f.name).map(g => `${g.name} (${g.level} ур.)`);
+        rows.push({ key: optionalKey(entry, f), f, replaced: [...new Set(replaced)], parts, tag: c.multi ? rus(entry.cls) : '' });
+      }
+    }
+    renderSection('optional', JSON.stringify([rows.map(r => r.key), state.optionalFeatures]), () => {
+      el.optionalBody.innerHTML = rows.length ? `<div class="choiceGroup choiceBlock">
+        <div class="choiceTitle">Опциональные умения (TCE) <span class="muted">— по умолчанию правила PHB</span></div>
+        <div class="filterChecks">${rows.map(r => `<label class="check">
+          <input type="checkbox" data-optional="${esc(r.key)}"${state.optionalFeatures[r.key] ? ' checked' : ''}>
+          <span>${esc(r.f.name)} <span class="muted">${r.f.level} ур.${r.tag ? ` · ${esc(r.tag)}` : ''}${r.replaced.length ? ` · заменяет «${esc(r.replaced.join('» / «'))}»` : ' · дополнительно'}${r.parts.length ? ` · включает: ${esc(r.parts.join(', '))}` : ''}</span></span>
+        </label>`).join('')}</div></div>` : '';
+    });
+    return rows.length;
+  }
+
   function renderChoices(c) {
-    el.choicesPanel.hidden = !c.choices.length;
+    const optionalCount = renderOptionalFeatures(c);
+    el.choicesPanel.hidden = !c.choices.length && !optionalCount;
     const signature = JSON.stringify([c.choices.map(ch => [ch.key, ch.type, ch.count, (ch.options || []).length]),
       state.choices, [...c.skills], state.level, Object.keys(lists.languages || {}).length, [...c.attacks.proficient], c.expertiseFrom, c.hasThievesTools]);
     renderSection('choices', signature, () => {
@@ -2784,6 +2850,12 @@
         return { ...m, [field]: t.value };
       });
       return setAndUpdate({ multiclass });
+    }
+    if (t.dataset.optional) {
+      const optionalFeatures = { ...state.optionalFeatures };
+      if (t.checked) optionalFeatures[t.dataset.optional] = true;
+      else delete optionalFeatures[t.dataset.optional];
+      return setAndUpdate({ optionalFeatures });
     }
     if (t.dataset.choice) {
       const list = [...(state.choices[t.dataset.choice] || [])];

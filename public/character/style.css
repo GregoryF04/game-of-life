@@ -38,6 +38,24 @@ h3 { font-size: 13px; margin-bottom: 8px; color: var(--site-muted); text-transfo
 
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .status { color: var(--site-muted); font-size: 12px; margin-right: 6px; }
+.rosterPick { display: flex; align-items: center; gap: 6px; color: var(--site-muted); font-size: 12px; }
+.rosterPick select { max-width: 260px; padding: 6px 8px; font-size: 13px; }
+button:disabled { opacity: .5; cursor: not-allowed; }
+
+/* Light copy of the sheet for PDF export (html2canvas does not apply @media print). */
+/* The stage hides the copy from view; html2pdf clones .exportSheet itself, which must stay
+   in normal flow or it renders blank. */
+.exportStage { position: fixed; left: -10000px; top: 0; }
+.exportSheet {
+  width: 760px; padding: 16px;
+  background: #fff; color: #000; font-family: "Segoe UI", system-ui, sans-serif;
+}
+.exportSheet * { color: #000 !important; box-shadow: none !important; }
+.exportSheet .box, .exportSheet .ability, .exportSheet .stat, .exportSheet .fact, .exportSheet .slot,
+.exportSheet .spellTable td, .exportSheet .spellTable th { background: #fff !important; border-color: #999 !important; }
+.exportSheet .feature summary::before { content: '' !important; }
+.exportSheet .pip.on { background: #000; border-color: #000; }
+.exportSheet .tag { border-color: #999 !important; }
 .status.error { color: #ff9b8f; }
 
 input, select, textarea, button { font: inherit; color: var(--site-ink); }

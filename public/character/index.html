@@ -24,9 +24,15 @@
       </div>
       <div class="toolbar">
         <output id="status" class="status" aria-live="polite">Загрузка справочников…</output>
+        <label class="rosterPick">Персонаж <select id="rosterSelect"></select></label>
         <button type="button" id="newBtn">Новый</button>
-        <button type="button" id="exportBtn">Экспорт</button>
+        <button type="button" id="copyBtn">Копия</button>
+        <button type="button" id="deleteBtn">Удалить</button>
+        <button type="button" id="shareBtn">Ссылка</button>
+        <button type="button" id="exportBtn">Экспорт JSON</button>
         <label class="fileBtn">Импорт<input type="file" id="importInput" accept="application/json,.json"></label>
+        <button type="button" id="pdfBtn">PDF</button>
+        <button type="button" id="docBtn">Word</button>
         <button type="button" id="printBtn">Печать</button>
       </div>
     </header>

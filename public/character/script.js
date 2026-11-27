@@ -147,16 +147,48 @@
   let edition = '2014';
   try { if (localStorage.getItem(EDITION_KEY) === '2024') edition = '2024'; } catch { /* storage blocked */ }
 
+  // ---------- roster: several saved characters per edition ----------
+  // { 2014: { active: id, items: { [id]: { state, updatedAt } } }, 2024: { … } }.
+  // Older versions kept one character per edition under STORAGE_KEYS; it becomes the first entry.
+  const ROSTER_KEY = 'mg-dnd-roster-v1';
+  const newId = () => `c${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+
+  function loadRoster() {
+    let roster = null;
+    try { roster = JSON.parse(localStorage.getItem(ROSTER_KEY)); } catch { /* storage blocked */ }
+    if (!roster || typeof roster !== 'object') roster = {};
+    for (const ed of ['2014', '2024']) {
+      if (roster[ed]?.items && Object.keys(roster[ed].items).length) continue;
+      let legacy = null;
+      try { legacy = JSON.parse(localStorage.getItem(STORAGE_KEYS[ed])); } catch { /* none */ }
+      const id = newId();
+      roster[ed] = { active: id, items: { [id]: { state: normalizeState(legacy), updatedAt: Date.now() } } };
+    }
+    for (const ed of ['2014', '2024']) {
+      if (!roster[ed].items[roster[ed].active]) roster[ed].active = Object.keys(roster[ed].items)[0];
+    }
+    return roster;
+  }
+  const roster = loadRoster();
+
   function loadState(ed) {
-    try { return normalizeState(JSON.parse(localStorage.getItem(STORAGE_KEYS[ed]))); } catch { return defaultState(); }
+    return normalizeState(roster[ed].items[roster[ed].active]?.state);
   }
   let state = loadState(edition);
 
   function save() {
+    roster[edition].items[roster[edition].active] = { state, updatedAt: Date.now() };
     try {
-      localStorage.setItem(STORAGE_KEYS[edition], JSON.stringify(state));
+      localStorage.setItem(ROSTER_KEY, JSON.stringify(roster));
       localStorage.setItem(EDITION_KEY, edition);
     } catch { /* storage blocked */ }
+  }
+
+  // Short label for the roster selector: name, class and level.
+  function rosterLabel(s) {
+    const cls = lists.classes?.find(x => x.url === s.classUrl);
+    const level = (s.level || 1) + (s.multiclass || []).reduce((n, m) => n + (m.classUrl ? m.level || 0 : 0), 0);
+    return `${s.name || 'Безымянный герой'}${cls ? ` — ${rus(cls)}` : ''}, ${level} ур.`;
   }
 
   // ---------- data ----------
@@ -279,11 +311,15 @@
       // Racial spells come as innateSpells; feats as grantedSpells plus structured choices.
       spellSources({ species, lineage, feats, pb, background }) {
         const sources = [];
+        // Elven Lineage / Fiendish Legacy (PHB 2024): cantrip at level 1, 1st-level spell at 3,
+        // 2nd-level spell at 5. TTG's Infernal tiefling lists all three at level 1.
+        const legacyLevel = (key, g) => (key === 'lineage' && /^(elf|tiefling)-phb$/.test(species?.url || '')
+          ? Math.max(g.requiredLevel || 1, [1, 3, 5][g.spell.level] || 1) : g.requiredLevel || 1);
         for (const [key, race] of [['species', species], ['lineage', lineage]]) {
           if (!race?.innateSpells?.length) continue;
           sources.push({
             key, title: rus(race), tag: 'раса', choices: [], listOptions: null,
-            fixed: race.innateSpells.filter(g => g.spell?.url).map(g => ({ url: g.spell.url, spell: g.spell, level: g.requiredLevel || 1 })),
+            fixed: race.innateSpells.filter(g => g.spell?.url).map(g => ({ url: g.spell.url, spell: g.spell, level: legacyLevel(key, g) })),
             // The casting ability is a choice on the species or its lineage (elf "Происхождения эльфов").
             choicePrefixes: [species && `race:${species.url}`, lineage && `race:${lineage.url}`].filter(Boolean),
           });
@@ -1571,7 +1607,7 @@
     tabSpellCount: $('tabSpellCount'), spellBrowserBody: $('spellBrowserBody'), spellSearch: $('spellSearch'),
     extraSpells: $('extraSpells'), choicesPanel: $('choicesPanel'), choicesBody: $('choicesBody'),
     multiclassEditor: $('multiclassEditor'), addClassBtn: $('addClassBtn'), levelLabel: $('levelLabel'), hpEditor: $('hpEditor'),
-    weaponSelect: $('weaponSelect'), weaponList: $('weaponList'), inventoryList: $('inventoryList'),
+    weaponSelect: $('weaponSelect'), weaponList: $('weaponList'), inventoryList: $('inventoryList'), rosterSelect: $('rosterSelect'),
     itemName: $('itemNameInput'), itemQty: $('itemQtyInput'),
     casterSwitch: $('casterSwitch'),
     filterLevels: $('filterLevels'), filterSchools: $('filterSchools'), filterConcGroup: $('filterConcGroup'),
@@ -2433,6 +2469,7 @@
     const c = compute();
     renderBuilder(c);
     renderSheet(c);
+    renderRoster(); // names and levels in the character selector
   }
 
   // ---------- events ----------
@@ -2447,6 +2484,7 @@
     save();
     const name = el.sheet.querySelector('.charName');
     if (name) name.textContent = state.name || 'Безымянный герой';
+    renderRoster();
   });
   $('addWeaponBtn').addEventListener('click', () => {
     const key = el.weaponSelect.value;
@@ -2827,21 +2865,75 @@
       ${rich(f.description)}`);
   }
 
-  $('newBtn').addEventListener('click', () => {
-    if (!window.confirm('Создать нового персонажа? Текущий лист будет очищен (сначала можно сделать экспорт).')) return;
-    state = defaultState();
-    Object.keys(rendered).forEach(k => delete rendered[k]);
-    fillMainSelects();
-    syncStaticInputs();
-    update();
-  });
-  $('exportBtn').addEventListener('click', () => {
-    const blob = new Blob([JSON.stringify({ ...state, edition }, null, 2)], { type: 'application/json' });
+  // ---------- roster actions ----------
+
+  const fileName = ext => `${(state.name || 'персонаж').replace(/[\\/:*?"<>|]+/g, '_')}.${ext}`;
+  function download(blob, name) {
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `${(state.name || 'персонаж').replace(/[\\/:*?"<>|]+/g, '_')}.json`;
+    a.download = name;
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+
+  function renderRoster() {
+    const box = roster[edition];
+    const items = Object.entries(box.items).sort((a, b) => (b[1].updatedAt || 0) - (a[1].updatedAt || 0));
+    el.rosterSelect.innerHTML = items.map(([id, item]) =>
+      `<option value="${esc(id)}"${id === box.active ? ' selected' : ''}>${esc(rosterLabel(id === box.active ? state : item.state || {}))}</option>`).join('');
+    $('deleteBtn').disabled = false;
+  }
+
+  // Shows another character of the current edition.
+  function activateCharacter(id) {
+    if (!roster[edition].items[id]) return;
+    save();
+    roster[edition].active = id;
+    state = loadState(edition);
+    generation++;
+    Object.keys(rendered).forEach(k => delete rendered[k]);
+    activeCaster = 'main';
+    fillMainSelects();
+    syncStaticInputs();
+    renderRoster();
+    update();
+  }
+
+  // Adds a character to the roster of an edition and shows it.
+  async function addCharacter(ed, characterState) {
+    save();
+    const id = newId();
+    roster[ed].items[id] = { state: normalizeState(characterState), updatedAt: Date.now() };
+    roster[ed].active = id;
+    if (ed !== edition) {
+      await switchEdition(ed); // loads the active (new) character of that edition
+    } else {
+      state = loadState(edition);
+      generation++;
+      Object.keys(rendered).forEach(k => delete rendered[k]);
+      fillMainSelects();
+      syncStaticInputs();
+      renderRoster();
+      await update(); // so a following status message is not overwritten
+    }
+  }
+
+  el.rosterSelect.addEventListener('change', () => activateCharacter(el.rosterSelect.value));
+  $('newBtn').addEventListener('click', () => addCharacter(edition, null));
+  $('copyBtn').addEventListener('click', () => addCharacter(edition, { ...JSON.parse(JSON.stringify(state)), name: `${state.name || 'Безымянный герой'} (копия)` }));
+  $('deleteBtn').addEventListener('click', () => {
+    if (!window.confirm(`Удалить «${state.name || 'Безымянный герой'}»? Это нельзя отменить (сначала можно сделать экспорт).`)) return;
+    const box = roster[edition];
+    delete box.items[box.active];
+    if (!Object.keys(box.items).length) { const id = newId(); box.items[id] = { state: defaultState(), updatedAt: Date.now() }; }
+    box.active = Object.entries(box.items).sort((a, b) => (b[1].updatedAt || 0) - (a[1].updatedAt || 0))[0][0];
+    state = loadState(edition); // the deleted one must not be saved back
+    try { localStorage.setItem(ROSTER_KEY, JSON.stringify(roster)); } catch { /* storage blocked */ }
+    activateCharacter(box.active);
+  });
+
+  $('exportBtn').addEventListener('click', () => {
+    download(new Blob([JSON.stringify({ ...state, edition }, null, 2)], { type: 'application/json' }), fileName('json'));
   });
   $('importInput').addEventListener('change', async event => {
     const file = event.target.files[0];
@@ -2851,18 +2943,126 @@
       const raw = JSON.parse(await file.text());
       // Exports before the edition switch carry no edition and are 2024 characters.
       const target = raw.edition === '2014' ? '2014' : '2024';
-      if (target !== edition) await switchEdition(target, { skipUpdate: true });
       delete raw.edition;
-      state = normalizeState(raw);
-      Object.keys(rendered).forEach(k => delete rendered[k]);
-      fillMainSelects();
-      syncStaticInputs();
-      update();
+      await addCharacter(target, raw); // imported characters are added, never overwrite
+      setStatus('Персонаж импортирован');
     } catch {
       setStatus('Файл не похож на сохранённого персонажа', true);
     }
   });
   $('printBtn').addEventListener('click', () => window.print());
+
+  // ---------- share link: the character, compressed, in the URL hash ----------
+
+  const toB64url = bytes => {
+    let s = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  };
+  const fromB64url = text => Uint8Array.from(atob(text.replace(/-/g, '+').replace(/_/g, '/')), ch => ch.charCodeAt(0));
+
+  async function encodeShare(payload) {
+    const bytes = new TextEncoder().encode(JSON.stringify(payload));
+    if (!('CompressionStream' in window)) return `j${toB64url(bytes)}`;
+    const stream = new Blob([bytes]).stream().pipeThrough(new CompressionStream('deflate-raw'));
+    return `z${toB64url(new Uint8Array(await new Response(stream).arrayBuffer()))}`;
+  }
+  async function decodeShare(code) {
+    const bytes = fromB64url(code.slice(1));
+    if (code[0] === 'j') return JSON.parse(new TextDecoder().decode(bytes));
+    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+    return JSON.parse(await new Response(stream).text());
+  }
+
+  $('shareBtn').addEventListener('click', async () => {
+    const url = `${location.origin}${location.pathname}#c=${await encodeShare({ e: edition, s: state })}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      setStatus('Ссылка на персонажа скопирована');
+    } catch {
+      showDetail(async () => url, u => `<h2>Ссылка на персонажа</h2>
+        <p class="hint">Скопируйте ссылку — по ней откроется копия этого персонажа.</p>
+        <input value="${esc(u)}" readonly onfocus="this.select()">`);
+    }
+  });
+
+  // A shared character in the URL is added to the roster (never replaces one).
+  async function importFromHash() {
+    const m = /^#c=([jz][A-Za-z0-9_-]+)$/.exec(location.hash);
+    if (!m) return false;
+    history.replaceState(null, '', location.pathname + location.search);
+    try {
+      const payload = await decodeShare(m[1]);
+      await addCharacter(payload.e === '2024' ? '2024' : '2014', payload.s);
+      setStatus('Персонаж из ссылки добавлен в список');
+      return true;
+    } catch {
+      setStatus('Ссылка повреждена — персонажа не удалось открыть', true);
+      return false;
+    }
+  }
+
+  // ---------- PDF / Word ----------
+
+  // A light, static copy of the sheet without the long feature descriptions.
+  function exportCopy() {
+    const holder = document.createElement('div');
+    holder.className = 'exportSheet';
+    holder.innerHTML = el.sheet.innerHTML;
+    holder.querySelectorAll('.rich, button.linkish[data-option-info]').forEach(x => x.remove());
+    holder.querySelectorAll('details').forEach(d => d.removeAttribute('open'));
+    return holder;
+  }
+
+  function loadScript(src) {
+    return new Promise((resolve, reject) => {
+      if ([...document.scripts].some(s => s.src === src)) return resolve();
+      const s = document.createElement('script');
+      s.src = src;
+      s.onload = resolve;
+      s.onerror = () => reject(new Error('script'));
+      document.head.appendChild(s);
+    });
+  }
+
+  $('pdfBtn').addEventListener('click', async () => {
+    setStatus('Готовлю PDF…');
+    try {
+      await loadScript('https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js');
+      const holder = exportCopy();
+      const stage = document.createElement('div');
+      stage.className = 'exportStage';
+      stage.appendChild(holder);
+      document.body.appendChild(stage);
+      await window.html2pdf().set({
+        margin: 8, filename: fileName('pdf'),
+        image: { type: 'jpeg', quality: 0.95 },
+        html2canvas: { scale: 2, backgroundColor: '#ffffff' },
+        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+        pagebreak: { mode: ['css', 'legacy'], avoid: ['.box', '.ability', '.stat', 'tr'] },
+      }).from(holder).save();
+      stage.remove();
+      setStatus('PDF сохранён');
+    } catch {
+      setStatus('Не удалось создать PDF — можно воспользоваться «Печать» → «Сохранить как PDF»', true);
+    }
+  });
+
+  // Word opens HTML saved with the .doc extension; keep the styling simple and inline.
+  $('docBtn').addEventListener('click', () => {
+    const holder = exportCopy();
+    holder.querySelectorAll('details summary').forEach(s => { s.outerHTML = `<p>${s.innerHTML}</p>`; });
+    const css = `body{font-family:Calibri,Arial,sans-serif;font-size:11pt;color:#000}
+      h3{font-size:12pt;margin:12pt 0 4pt;text-transform:uppercase}
+      table{border-collapse:collapse}td,th{border:1px solid #999;padding:2pt 4pt;font-size:10pt}
+      .ability,.stat,.fact{display:inline-block;border:1px solid #999;padding:4pt;margin:2pt;min-width:60pt;text-align:center}
+      .tag{border:1px solid #999;padding:0 3pt;font-size:8pt}.muted,.hint{color:#555}`;
+    const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word">
+      <head><meta charset="utf-8"><title>${esc(state.name || 'Персонаж')}</title><style>${css}</style></head>
+      <body>${holder.innerHTML}</body></html>`;
+    download(new Blob(['﻿', html], { type: 'application/msword' }), fileName('doc'));
+    setStatus('Документ Word сохранён');
+  });
 
   document.querySelectorAll('input[name="edition"]').forEach(radio => radio.addEventListener('change', () => {
     if (radio.checked) switchEdition(radio.value);
@@ -2899,13 +3099,15 @@
     });
     Object.keys(rendered).forEach(k => delete rendered[k]);
     spellFilter = defaultSpellFilter();
+    activeCaster = 'main';
     syncSpellFilterInputs();
     setStatus('Загрузка…');
     syncStaticInputs();
     await loadEditionLists();
     syncStaticInputs();
     fillMainSelects();
-    if (!skipUpdate) update();
+    renderRoster();
+    if (!skipUpdate) await update();
   }
 
   // ---------- init ----------
@@ -2930,7 +3132,9 @@
     lists.conditions = toDict(conditions);
     syncStaticInputs();
     fillMainSelects();
-    update();
+    renderRoster();
+    // A shared link adds its character and shows it; otherwise show the active one.
+    if (!(await importFromHash())) update();
   }
 
   init();
